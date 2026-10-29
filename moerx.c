@@ -1,0 +1,3535 @@
+/* Feature macros must come before any system header. */
+#ifndef _XOPEN_SOURCE
+#define _XOPEN_SOURCE 700
+#endif
+#ifndef _DARWIN_C_SOURCE
+#define _DARWIN_C_SOURCE
+#endif
+
+/*
+ * moerx - a very small terminal multiplexer
+ *
+ * One binary, no config file. Shortcuts and colours are hard-coded.
+ *
+ *   moerx [session]     attach to session (default "0"), or start it
+ *   moerx -h|--help     show usage and all Ctrl-A shortcut chains
+ *
+ * Pure C99 + POSIX (macOS / Linux).
+ */
+
+#include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <locale.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/file.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#include <termios.h>
+#include <time.h>
+#include <unistd.h>
+#include <wchar.h>
+#include <wctype.h>
+
+#define PREFIX 0x01
+
+/* client -> server */
+enum { C_ATTACH = 1, C_INPUT = 2, C_RESIZE = 3 };
+/* server -> client */
+enum { S_DRAW = 4, S_DETACH = 5 };
+
+typedef struct {
+    uint32_t type;
+    uint32_t len;
+} MsgHdr;
+
+static int send_msg(int fd, uint32_t type, const void *data, uint32_t len);
+
+/* colour palette */
+#define C_BLACK   0
+#define C_CYAN    6
+#define C_WHITE   7
+#define C_GREY    8
+#define C_YELLOW  11
+#define C_BLUE    12
+#define C_CYAN2   14
+#define C_BWHITE  15
+
+/* Pane borders: thin box-drawing lines in a muted grey, drawn over the
+   terminal's own background. */
+#define C_BORDER  C_GREY
+
+/* Status line palette, mirroring ~/.tmux.conf:
+   status fg colour12, accent colour14, current window colour11,
+   message style fg=colour6,bg=colour8. */
+#define P_STATUS  C_BLUE
+#define P_ACCENT  C_CYAN2
+#define P_CURRENT C_YELLOW
+#define P_MSG     C_CYAN
+#define P_MSG_BG  C_GREY
+
+#define DEFAULT_COLOR (-1)
+#define RGB_FLAG 0x01000000
+#define WIDE_CONT 0xFFFFFFFFu
+
+#define MIN_COLS 20
+#define MIN_ROWS 5
+#define MSG_TIME 3000
+#define STATUS_INTERVAL 2
+
+/* ------------------------------------------------------------------ */
+/* small helpers                                                      */
+/* ------------------------------------------------------------------ */
+
+static void *xmalloc(size_t n) {
+    void *p = malloc(n);
+    if (!p) {
+        fputs("moerx: out of memory\n", stderr);
+        exit(1);
+    }
+    return p;
+}
+
+static void *xcalloc(size_t n, size_t sz) {
+    void *p = calloc(n, sz);
+    if (!p) {
+        fputs("moerx: out of memory\n", stderr);
+        exit(1);
+    }
+    return p;
+}
+
+static void *xrealloc(void *p, size_t n) {
+    void *q = realloc(p, n);
+    if (!q) {
+        fputs("moerx: out of memory\n", stderr);
+        exit(1);
+    }
+    return q;
+}
+
+static long long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static int utf8_decode(const unsigned char *s, int n, uint32_t *cp) {
+    unsigned char b = s[0];
+    if (b < 0x80) { *cp = b; return 1; }
+    if ((b & 0xE0) == 0xC0 && n >= 2) {
+        *cp = ((uint32_t)(b & 0x1F) << 6) | (s[1] & 0x3F);
+        return 2;
+    }
+    if ((b & 0xF0) == 0xE0 && n >= 3) {
+        *cp = ((uint32_t)(b & 0x0F) << 12) |
+              ((uint32_t)(s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+        return 3;
+    }
+    if ((b & 0xF8) == 0xF0 && n >= 4) {
+        *cp = ((uint32_t)(b & 0x07) << 18) |
+              ((uint32_t)(s[1] & 0x3F) << 12) |
+              ((uint32_t)(s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+        return 4;
+    }
+    *cp = b;
+    return 1;
+}
+
+static int cp_width(uint32_t cp) {
+    int w;
+    if (cp == 0 || cp == WIDE_CONT) return 1;
+    w = wcwidth((wchar_t)cp);
+    if (w < 0) return 1;
+    return w;
+}
+
+/* ------------------------------------------------------------------ */
+/* cells and screens                                                  */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    uint32_t ch;
+    int32_t fg;
+    int32_t bg;
+    uint8_t attr;
+} Cell;
+
+#define A_BOLD   0x01
+#define A_DIM    0x02
+#define A_ITALIC 0x04
+#define A_ULINE  0x08
+#define A_REV    0x10
+/* Internal marker: cell belongs to a moerx border, not pane content.
+   Never emitted to the terminal. */
+
+static Cell blank_cell(void) {
+    Cell c;
+    c.ch = ' ';
+    c.fg = DEFAULT_COLOR;
+    c.bg = DEFAULT_COLOR;
+    c.attr = 0;
+    return c;
+}
+
+typedef struct {
+    int w, h;
+    Cell *c;
+} Grid;
+
+static void grid_init(Grid *g, int w, int h) {
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    g->w = w;
+    g->h = h;
+    g->c = xmalloc((size_t)w * (size_t)h * sizeof(Cell));
+    for (int i = 0; i < w * h; i++) g->c[i] = blank_cell();
+}
+
+static void grid_free(Grid *g) {
+    free(g->c);
+    g->c = NULL;
+    g->w = g->h = 0;
+}
+
+static Cell *grid_at(Grid *g, int x, int y) {
+    if (x < 0 || y < 0 || x >= g->w || y >= g->h) return NULL;
+    return &g->c[y * g->w + x];
+}
+
+static void grid_clear(Grid *g, int32_t bg) {
+    for (int i = 0; i < g->w * g->h; i++) {
+        g->c[i] = blank_cell();
+        g->c[i].bg = bg;
+    }
+}
+
+static void grid_clear_line(Grid *g, int y, int32_t bg) {
+    if (y < 0 || y >= g->h) return;
+    for (int x = 0; x < g->w; x++) {
+        Cell *c = grid_at(g, x, y);
+        *c = blank_cell();
+        c->bg = bg;
+    }
+}
+
+static void grid_resize(Grid *g, int w, int h) {
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (w == g->w && h == g->h) return;
+    Grid n;
+    grid_init(&n, w, h);
+    int cw = w < g->w ? w : g->w;
+    int ch = h < g->h ? h : g->h;
+    for (int y = 0; y < ch; y++) {
+        memcpy(&n.c[y * w], &g->c[y * g->w], (size_t)cw * sizeof(Cell));
+    }
+    grid_free(g);
+    *g = n;
+}
+
+typedef struct {
+    int x, y;
+} CursorPos;
+
+/* ------------------------------------------------------------------ */
+/* terminal state                                                     */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    int32_t fg, bg;
+    uint8_t attr;
+} Pen;
+
+typedef enum {
+    PS_GROUND = 0,
+    PS_ESC,
+    PS_CSI,
+    PS_OSC,
+    PS_OSC_ESC,
+    PS_CHARSET,
+    PS_DCS,
+    PS_DCS_ESC
+} ParseState;
+
+typedef struct Pane Pane;
+
+struct Pane {
+    int fd;
+    pid_t pid;
+    int alive;
+
+    /* layout / screen placement (content area, border row is y-1) */
+    int x, y, w, h;
+
+    Grid main_grid, alt_grid;
+    Grid *grid;
+    int on_alt;
+
+    int cx, cy;
+    int wrap_pending;
+    int scroll_top, scroll_bot;
+    int cursor_visible;
+    int insert_mode;
+
+    Pen pen;
+    int saved_x, saved_y;
+    Pen saved_pen;
+    int main_x, main_y;
+    Pen main_pen;
+
+    ParseState pstate;
+    char seq[256];
+    int seqlen;
+
+    int u8_need, u8_have;
+    uint32_t u8_cp;
+
+    char title[128];
+    int id;
+    int tty_fd;
+
+    Pane *next;
+};
+
+static void pane_write(Pane *p, const void *buf, size_t len) {
+    const char *s = buf;
+    while (len > 0 && p->fd >= 0) {
+        ssize_t n = write(p->fd, s, len);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                struct pollfd pfd;
+                pfd.fd = p->fd;
+                pfd.events = POLLOUT;
+                pfd.revents = 0;
+                if (poll(&pfd, 1, 20) > 0) continue;
+            }
+            return;
+        }
+        s += n;
+        len -= (size_t)n;
+    }
+}
+
+/* forward declarations for the emulator */
+static void em_scroll_up(Pane *p, int n);
+static void em_scroll_down(Pane *p, int n);
+static void em_set_alt(Pane *p, int on);
+
+static void pane_lf(Pane *p) {
+    p->wrap_pending = 0;
+    if (p->cy == p->scroll_bot) {
+        em_scroll_up(p, 1);
+    } else if (p->cy < p->grid->h - 1) {
+        p->cy++;
+    }
+}
+
+static void pane_put_cp(Pane *p, uint32_t cp) {
+    int w = cp_width(cp);
+    Grid *g = p->grid;
+    if (w == 0) return;                /* combining mark: ignore */
+    if (w > 2) w = 1;
+    if (p->wrap_pending) {
+        p->cx = 0;
+        pane_lf(p);
+    }
+    if (p->cx + w > g->w) {
+        p->cx = 0;
+        pane_lf(p);
+    }
+    if (p->insert_mode && p->cx + w < g->w) {
+        int shift = g->w - p->cx - w;
+        Cell *row = &g->c[p->cy * g->w];
+        memmove(&row[p->cx + w], &row[p->cx], (size_t)shift * sizeof(Cell));
+    }
+    Cell c;
+    c.ch = cp;
+    c.fg = p->pen.fg;
+    c.bg = p->pen.bg;
+    c.attr = p->pen.attr;
+    Cell *at = grid_at(g, p->cx, p->cy);
+    if (at) *at = c;
+    if (w == 2) {
+        Cell *cont = grid_at(g, p->cx + 1, p->cy);
+        if (cont) {
+            cont->ch = WIDE_CONT;
+            cont->fg = c.fg;
+            cont->bg = c.bg;
+            cont->attr = c.attr;
+        }
+    }
+    p->cx += w;
+    if (p->cx >= g->w) {
+        p->cx = g->w - 1;
+        p->wrap_pending = 1;
+    }
+}
+
+static void pane_cr(Pane *p) {
+    p->cx = 0;
+    p->wrap_pending = 0;
+}
+
+static void pane_bs(Pane *p) {
+    if (p->cx > 0) p->cx--;
+    p->wrap_pending = 0;
+}
+
+static void pane_tab(Pane *p) {
+    int nx = (p->cx / 8 + 1) * 8;
+    if (nx >= p->grid->w) nx = p->grid->w - 1;
+    p->cx = nx;
+    p->wrap_pending = 0;
+}
+
+static void pane_erase_cell(Pane *p, int x, int y) {
+    Cell *c = grid_at(p->grid, x, y);
+    if (!c) return;
+    *c = blank_cell();
+    c->bg = p->pen.bg;
+}
+
+static void em_scroll_up(Pane *p, int n) {
+    Grid *g = p->grid;
+    if (n < 1) n = 1;
+    if (n > p->scroll_bot - p->scroll_top + 1) n = p->scroll_bot - p->scroll_top + 1;
+    for (int y = p->scroll_top; y <= p->scroll_bot - n; y++) {
+        memcpy(&g->c[y * g->w], &g->c[(y + n) * g->w], (size_t)g->w * sizeof(Cell));
+    }
+    for (int y = p->scroll_bot - n + 1; y <= p->scroll_bot; y++) {
+        grid_clear_line(g, y, p->pen.bg);
+    }
+}
+
+static void em_scroll_down(Pane *p, int n) {
+    Grid *g = p->grid;
+    if (n < 1) n = 1;
+    if (n > p->scroll_bot - p->scroll_top + 1) n = p->scroll_bot - p->scroll_top + 1;
+    for (int y = p->scroll_bot; y >= p->scroll_top + n; y--) {
+        memcpy(&g->c[y * g->w], &g->c[(y - n) * g->w], (size_t)g->w * sizeof(Cell));
+    }
+    for (int y = p->scroll_top; y < p->scroll_top + n; y++) {
+        grid_clear_line(g, y, p->pen.bg);
+    }
+}
+
+static void em_set_alt(Pane *p, int on) {
+    if (on && !p->on_alt) {
+        p->main_x = p->cx;
+        p->main_y = p->cy;
+        p->main_pen = p->pen;
+        p->on_alt = 1;
+        p->grid = &p->alt_grid;
+        grid_clear(&p->alt_grid, DEFAULT_COLOR);
+        p->cx = p->cy = 0;
+        p->wrap_pending = 0;
+        p->scroll_top = 0;
+        p->scroll_bot = p->grid->h - 1;
+    } else if (!on && p->on_alt) {
+        p->on_alt = 0;
+        p->grid = &p->main_grid;
+        p->cx = p->main_x;
+        p->cy = p->main_y;
+        p->pen = p->main_pen;
+        p->wrap_pending = 0;
+        p->scroll_top = 0;
+        p->scroll_bot = p->grid->h - 1;
+        if (p->cx >= p->grid->w) p->cx = p->grid->w - 1;
+        if (p->cy >= p->grid->h) p->cy = p->grid->h - 1;
+    }
+}
+
+static void em_reset(Pane *p) {
+    p->on_alt = 0;
+    p->grid = &p->main_grid;
+    grid_clear(&p->main_grid, DEFAULT_COLOR);
+    grid_clear(&p->alt_grid, DEFAULT_COLOR);
+    p->cx = p->cy = 0;
+    p->wrap_pending = 0;
+    p->scroll_top = 0;
+    p->scroll_bot = p->grid->h - 1;
+    p->pen.fg = DEFAULT_COLOR;
+    p->pen.bg = DEFAULT_COLOR;
+    p->pen.attr = 0;
+    p->cursor_visible = 1;
+    p->insert_mode = 0;
+    p->pstate = PS_GROUND;
+}
+
+/* ------------------------------------------------------------------ */
+/* escape sequence handling                                           */
+/* ------------------------------------------------------------------ */
+
+static int parse_params(const char *s, int len, int *out, int max) {
+    int n = 0;
+    int val = -1;
+    int any = 0;
+    for (int i = 0; i < len && n < max; i++) {
+        unsigned char ch = (unsigned char)s[i];
+        if (ch == ';' || ch == ':') {
+            out[n++] = any ? val : -1;
+            val = -1;
+            any = 0;
+        } else if (ch >= '0' && ch <= '9') {
+            if (!any) val = 0;
+            if (val < 100000) val = val * 10 + (ch - '0');
+            any = 1;
+        } else {
+            /* private markers / intermediates: ignore */
+        }
+    }
+    if (n < max) out[n++] = any ? val : -1;
+    return n;
+}
+
+static int param(int *p, int n, int i, int def) {
+    if (i >= n || p[i] < 0) return def;
+    return p[i];
+}
+
+static void em_sgr(Pane *p, int *ps, int n) {
+    for (int i = 0; i < n; i++) {
+        int v = ps[i];
+        if (v < 0) v = 0;
+        if (v == 0) {
+            p->pen.fg = DEFAULT_COLOR;
+            p->pen.bg = DEFAULT_COLOR;
+            p->pen.attr = 0;
+        } else if (v == 1) p->pen.attr |= A_BOLD;
+        else if (v == 2) p->pen.attr |= A_DIM;
+        else if (v == 3) p->pen.attr |= A_ITALIC;
+        else if (v == 4) p->pen.attr |= A_ULINE;
+        else if (v == 7) p->pen.attr |= A_REV;
+        else if (v == 21) p->pen.attr |= A_ULINE;
+        else if (v == 22) p->pen.attr &= ~(A_BOLD | A_DIM);
+        else if (v == 23) p->pen.attr &= ~A_ITALIC;
+        else if (v == 24) p->pen.attr &= ~A_ULINE;
+        else if (v == 27) p->pen.attr &= ~A_REV;
+        else if (v >= 30 && v <= 37) p->pen.fg = v - 30;
+        else if (v == 39) p->pen.fg = DEFAULT_COLOR;
+        else if (v >= 40 && v <= 47) p->pen.bg = v - 40;
+        else if (v == 49) p->pen.bg = DEFAULT_COLOR;
+        else if (v >= 90 && v <= 97) p->pen.fg = v - 90 + 8;
+        else if (v >= 100 && v <= 107) p->pen.bg = v - 100 + 8;
+        else if ((v == 38 || v == 48) && i + 1 < n) {
+            int target = (v == 38) ? 0 : 1;   /* 0 fg, 1 bg */
+            if (ps[i + 1] == 5 && i + 2 < n) {
+                int idx = ps[i + 2];
+                if (idx < 0) idx = 0;
+                if (idx > 255) idx = 255;
+                if (target == 0) p->pen.fg = idx;
+                else p->pen.bg = idx;
+                i += 2;
+            } else if (ps[i + 1] == 2 && i + 4 < n) {
+                int r = ps[i + 2], g = ps[i + 3], b = ps[i + 4];
+                if (r < 0) r = 0; if (r > 255) r = 255;
+                if (g < 0) g = 0; if (g > 255) g = 255;
+                if (b < 0) b = 0; if (b > 255) b = 255;
+                int32_t col = RGB_FLAG | (r << 16) | (g << 8) | b;
+                if (target == 0) p->pen.fg = col;
+                else p->pen.bg = col;
+                i += 4;
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
+static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
+    int priv = 0;
+    int pn = 0;
+    int ps[32];
+    const char *s = raw;
+    int slen = len;
+    if (slen > 0 && (s[0] == '?' || s[0] == '>' || s[0] == '!')) {
+        if (s[0] == '?') priv = 1;
+        s++;
+        slen--;
+    }
+    pn = parse_params(s, slen, ps, 32);
+    Grid *g = p->grid;
+    int n;
+
+    switch (final) {
+    case 'm':
+        em_sgr(p, ps, pn);
+        break;
+    case 'H':
+    case 'f':
+        p->cy = param(ps, pn, 0, 1) - 1;
+        p->cx = param(ps, pn, 1, 1) - 1;
+        if (p->cy < 0) p->cy = 0;
+        if (p->cy >= g->h) p->cy = g->h - 1;
+        if (p->cx < 0) p->cx = 0;
+        if (p->cx >= g->w) p->cx = g->w - 1;
+        p->wrap_pending = 0;
+        break;
+    case 'A':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        p->cy -= n;
+        if (p->cy < p->scroll_top) p->cy = p->scroll_top;
+        p->wrap_pending = 0;
+        break;
+    case 'B':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        p->cy += n;
+        if (p->cy > p->scroll_bot) p->cy = p->scroll_bot;
+        p->wrap_pending = 0;
+        break;
+    case 'C':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        p->cx += n;
+        if (p->cx >= g->w) p->cx = g->w - 1;
+        p->wrap_pending = 0;
+        break;
+    case 'D':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        p->cx -= n;
+        if (p->cx < 0) p->cx = 0;
+        p->wrap_pending = 0;
+        break;
+    case 'E':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        p->cx = 0;
+        for (int i = 0; i < n; i++) pane_lf(p);
+        break;
+    case 'F':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        p->cx = 0;
+        p->cy -= n;
+        if (p->cy < p->scroll_top) p->cy = p->scroll_top;
+        p->wrap_pending = 0;
+        break;
+    case 'G':
+    case '`':
+        p->cx = param(ps, pn, 0, 1) - 1;
+        if (p->cx < 0) p->cx = 0;
+        if (p->cx >= g->w) p->cx = g->w - 1;
+        p->wrap_pending = 0;
+        break;
+    case 'd':
+        p->cy = param(ps, pn, 0, 1) - 1;
+        if (p->cy < 0) p->cy = 0;
+        if (p->cy >= g->h) p->cy = g->h - 1;
+        p->wrap_pending = 0;
+        break;
+    case 'J': {
+        int mode = param(ps, pn, 0, 0);
+        if (mode == 0) {
+            for (int x = p->cx; x < g->w; x++) pane_erase_cell(p, x, p->cy);
+            for (int y = p->cy + 1; y < g->h; y++) grid_clear_line(g, y, p->pen.bg);
+        } else if (mode == 1) {
+            for (int y = 0; y < p->cy; y++) grid_clear_line(g, y, p->pen.bg);
+            for (int x = 0; x <= p->cx && x < g->w; x++) pane_erase_cell(p, x, p->cy);
+        } else {
+            grid_clear(g, p->pen.bg);
+        }
+        p->wrap_pending = 0;
+        break;
+    }
+    case 'K': {
+        int mode = param(ps, pn, 0, 0);
+        if (mode == 0) {
+            for (int x = p->cx; x < g->w; x++) pane_erase_cell(p, x, p->cy);
+        } else if (mode == 1) {
+            for (int x = 0; x <= p->cx && x < g->w; x++) pane_erase_cell(p, x, p->cy);
+        } else {
+            grid_clear_line(g, p->cy, p->pen.bg);
+        }
+        p->wrap_pending = 0;
+        break;
+    }
+    case 'L':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        if (p->cy >= p->scroll_top && p->cy <= p->scroll_bot) {
+            for (int i = 0; i < n; i++) {
+                for (int y = p->scroll_bot; y > p->cy; y--) {
+                    memcpy(&g->c[y * g->w], &g->c[(y - 1) * g->w], (size_t)g->w * sizeof(Cell));
+                }
+                grid_clear_line(g, p->cy, p->pen.bg);
+            }
+        }
+        break;
+    case 'M':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        if (p->cy >= p->scroll_top && p->cy <= p->scroll_bot) {
+            for (int i = 0; i < n; i++) {
+                for (int y = p->cy; y < p->scroll_bot; y++) {
+                    memcpy(&g->c[y * g->w], &g->c[(y + 1) * g->w], (size_t)g->w * sizeof(Cell));
+                }
+                grid_clear_line(g, p->scroll_bot, p->pen.bg);
+            }
+        }
+        break;
+    case 'P':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        if (n > g->w - p->cx) n = g->w - p->cx;
+        for (int x = p->cx; x < g->w; x++) {
+            Cell *dst = grid_at(g, x, p->cy);
+            Cell *src = grid_at(g, x + n, p->cy);
+            if (dst) *dst = src ? *src : blank_cell();
+            if (dst && !src) dst->bg = p->pen.bg;
+        }
+        break;
+    case 'X':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        for (int i = 0; i < n && p->cx + i < g->w; i++) pane_erase_cell(p, p->cx + i, p->cy);
+        break;
+    case '@':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        if (n > g->w - p->cx) n = g->w - p->cx;
+        for (int x = g->w - 1; x >= p->cx + n; x--) {
+            Cell *dst = grid_at(g, x, p->cy);
+            Cell *src = grid_at(g, x - n, p->cy);
+            if (dst) *dst = src ? *src : blank_cell();
+        }
+        for (int x = p->cx; x < p->cx + n; x++) pane_erase_cell(p, x, p->cy);
+        break;
+    case 'S':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        em_scroll_up(p, n);
+        break;
+    case 'T':
+        n = param(ps, pn, 0, 1);
+        if (n < 1) n = 1;
+        em_scroll_down(p, n);
+        break;
+    case 'r': {
+        int top = param(ps, pn, 0, 1) - 1;
+        int bot = param(ps, pn, 1, g->h) - 1;
+        if (top < 0) top = 0;
+        if (bot >= g->h) bot = g->h - 1;
+        if (top < bot) {
+            p->scroll_top = top;
+            p->scroll_bot = bot;
+            p->cx = 0;
+            p->cy = 0;
+        }
+        p->wrap_pending = 0;
+        break;
+    }
+    case 's':
+        p->saved_x = p->cx;
+        p->saved_y = p->cy;
+        p->saved_pen = p->pen;
+        break;
+    case 'u':
+        p->cx = p->saved_x;
+        p->cy = p->saved_y;
+        p->pen = p->saved_pen;
+        if (p->cx >= g->w) p->cx = g->w - 1;
+        if (p->cy >= g->h) p->cy = g->h - 1;
+        break;
+    case 'h':
+    case 'l': {
+        int on = (final == 'h');
+        for (int i = 0; i < pn; i++) {
+            int v = ps[i];
+            if (priv) {
+                if (v == 25) p->cursor_visible = on;
+                else if (v == 47 || v == 1047 || v == 1049) em_set_alt(p, on);
+                else if (v == 1048) {
+                    if (on) {
+                        p->saved_x = p->cx;
+                        p->saved_y = p->cy;
+                        p->saved_pen = p->pen;
+                    } else {
+                        p->cx = p->saved_x;
+                        p->cy = p->saved_y;
+                        p->pen = p->saved_pen;
+                    }
+                }
+            } else {
+                if (v == 4) p->insert_mode = on;
+            }
+        }
+        break;
+    }
+    case 'n':
+        if (!priv) {
+            int v = param(ps, pn, 0, 0);
+            char out[64];
+            if (v == 6) {
+                int l = snprintf(out, sizeof out, "\x1b[%d;%dR", p->cy + 1, p->cx + 1);
+                pane_write(p, out, (size_t)l);
+            } else if (v == 5) {
+                pane_write(p, "\x1b[0n", 4);
+            }
+        }
+        break;
+    case 'c': {
+        int v = param(ps, pn, 0, 0);
+        if (!priv || v == 0) pane_write(p, "\x1b[?1;2c", 8);
+        break;
+    }
+    case 't': {
+        int v = param(ps, pn, 0, 0);
+        if (!priv && (v == 18 || v == 19)) {
+            char out[64];
+            int l = snprintf(out, sizeof out, "\x1b[8;%d;%dt", g->h, g->w);
+            pane_write(p, out, (size_t)l);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+static void em_osc_done(Pane *p) {
+    p->seq[p->seqlen] = '\0';
+    if (p->seqlen > 2 && (p->seq[0] == '0' || p->seq[0] == '2') && p->seq[1] == ';') {
+        const char *t = p->seq + 2;
+        size_t n = strlen(t);
+        if (n >= sizeof p->title) n = sizeof p->title - 1;
+        memcpy(p->title, t, n);
+        p->title[n] = '\0';
+        for (size_t i = 0; i < n; i++) {
+            if ((unsigned char)p->title[i] < 32) p->title[i] = ' ';
+        }
+    }
+    p->seqlen = 0;
+}
+
+static void em_byte(Pane *p, unsigned char b) {
+    switch (p->pstate) {
+    case PS_GROUND:
+        if (b == 0x1b) {
+            p->pstate = PS_ESC;
+            p->seqlen = 0;
+        } else if (b == '\r') {
+            pane_cr(p);
+        } else if (b == '\n' || b == '\v' || b == '\f') {
+            pane_lf(p);
+        } else if (b == '\b') {
+            pane_bs(p);
+        } else if (b == '\t') {
+            pane_tab(p);
+        } else if (b == 0x07 || b == 0x0e || b == 0x0f || b == 0x7f) {
+            /* bell / shifts / delete: ignore */
+        } else if (b < 0x20) {
+            /* other C0: ignore */
+        } else {
+            /* utf-8 accumulate */
+            if (p->u8_need) {
+                if ((b & 0xC0) == 0x80) {
+                    p->u8_cp = (p->u8_cp << 6) | (b & 0x3F);
+                    p->u8_have++;
+                    if (p->u8_have == p->u8_need) {
+                        pane_put_cp(p, p->u8_cp);
+                        p->u8_need = p->u8_have = 0;
+                    }
+                    return;
+                }
+                p->u8_need = p->u8_have = 0;
+            }
+            if (b < 0x80) {
+                pane_put_cp(p, b);
+            } else if ((b & 0xE0) == 0xC0) {
+                p->u8_cp = b & 0x1F;
+                p->u8_need = 1;
+                p->u8_have = 0;
+            } else if ((b & 0xF0) == 0xE0) {
+                p->u8_cp = b & 0x0F;
+                p->u8_need = 2;
+                p->u8_have = 0;
+            } else if ((b & 0xF8) == 0xF0) {
+                p->u8_cp = b & 0x07;
+                p->u8_need = 3;
+                p->u8_have = 0;
+            }
+        }
+        break;
+
+    case PS_ESC:
+        p->pstate = PS_GROUND;
+        switch (b) {
+        case '[':
+            p->pstate = PS_CSI;
+            p->seqlen = 0;
+            break;
+        case ']':
+            p->pstate = PS_OSC;
+            p->seqlen = 0;
+            break;
+        case 'P':
+            p->pstate = PS_DCS;
+            p->seqlen = 0;
+            break;
+        case '(': case ')': case '*': case '+':
+            p->pstate = PS_CHARSET;
+            break;
+        case '7':
+            p->saved_x = p->cx;
+            p->saved_y = p->cy;
+            p->saved_pen = p->pen;
+            break;
+        case '8':
+            p->cx = p->saved_x;
+            p->cy = p->saved_y;
+            p->pen = p->saved_pen;
+            if (p->cx >= p->grid->w) p->cx = p->grid->w - 1;
+            if (p->cy >= p->grid->h) p->cy = p->grid->h - 1;
+            break;
+        case 'D':
+            pane_lf(p);
+            break;
+        case 'E':
+            p->cx = 0;
+            pane_lf(p);
+            break;
+        case 'M':
+            if (p->cy == p->scroll_top) em_scroll_down(p, 1);
+            else if (p->cy > 0) p->cy--;
+            p->wrap_pending = 0;
+            break;
+        case 'c':
+            em_reset(p);
+            break;
+        default:
+            break;
+        }
+        break;
+
+    case PS_CHARSET:
+        p->pstate = PS_GROUND;
+        break;
+
+    case PS_CSI:
+        if (b >= 0x40 && b <= 0x7e) {
+            p->pstate = PS_GROUND;
+            em_csi(p, p->seq, p->seqlen, b);
+        } else if (p->seqlen < (int)sizeof p->seq - 1) {
+            p->seq[p->seqlen++] = (char)b;
+        }
+        break;
+
+    case PS_OSC:
+        if (b == 0x07) {
+            p->pstate = PS_GROUND;
+            em_osc_done(p);
+        } else if (b == 0x1b) {
+            p->pstate = PS_OSC_ESC;
+        } else if (p->seqlen < (int)sizeof p->seq - 1) {
+            p->seq[p->seqlen++] = (char)b;
+        }
+        break;
+
+    case PS_OSC_ESC:
+        if (b == '\\') {
+            p->pstate = PS_GROUND;
+            em_osc_done(p);
+        } else {
+            p->pstate = PS_OSC;
+            p->seqlen = 0;
+        }
+        break;
+
+    case PS_DCS:
+        if (b == 0x1b) p->pstate = PS_DCS_ESC;
+        else if (b == 0x07) p->pstate = PS_GROUND;
+        break;
+
+    case PS_DCS_ESC:
+        p->pstate = (b == '\\') ? PS_GROUND : PS_DCS;
+        break;
+    }
+}
+
+static void em_feed(Pane *p, const unsigned char *buf, size_t len) {
+    for (size_t i = 0; i < len; i++) em_byte(p, buf[i]);
+}
+
+/* ------------------------------------------------------------------ */
+/* layout tree, windows, session                                      */
+/* ------------------------------------------------------------------ */
+
+enum { L_LEAF = 0, L_COLS = 1, L_ROWS = 2 };
+
+typedef struct Layout {
+    int type;
+    double ratio;
+    struct Layout *a, *b, *parent;
+    Pane *pane;
+    int x, y, w, h;
+} Layout;
+
+typedef struct Window {
+    char name[128];
+    int index;
+    Layout *root;
+    Pane *active;
+    struct Window *next;
+} Window;
+
+typedef struct Client Client;
+typedef struct Session Session;
+
+struct Client {
+    int fd;
+    int cols, rows;
+    int attached;
+    int truecolor;
+    unsigned char in[16384];
+    size_t inlen;
+    unsigned char net[65536];
+    size_t netlen;
+
+    Grid prev;
+    int prev_valid;
+
+    int locked;
+    int prefix_pending;
+
+    int mode;              /* 0 none, 1 prompt, 2 menu, 3 confirm */
+    int prompt_kind;       /* 1 rename window, 2 choose window */
+    char prompt[160];
+    int prompt_len;
+    int prompt_label_len;
+
+    int menu_sel;
+    int confirm_action;    /* 1 kill pane, 2 kill server */
+
+    char msg[256];
+    long long msg_until;
+
+    char title[160];
+
+    int dead;
+    Client *next;
+};
+
+struct Session {
+    char name[64];
+    char sock_path[PATH_MAX];
+    char cwd[PATH_MAX];
+    int listen_fd;
+
+    int w, h;
+    Window *windows;
+    Window *cur, *last;
+    int nwin;
+
+    Client *clients;
+    int running;
+
+    long long last_status;
+};
+
+static void pane_set_winsize(Pane *p, int w, int h) {    struct winsize ws;
+    memset(&ws, 0, sizeof ws);
+    ws.ws_col = (unsigned short)w;
+    ws.ws_row = (unsigned short)h;
+
+    /* macOS rejects TIOCSWINSZ on the master, so always set it on the slave.
+       The server keeps a slave fd open for the whole life of the pane: this
+       makes resizing work and prevents a startup race where reading the
+       master before the child opens the slave would look like EOF. */
+    if (p->tty_fd >= 0) {
+        ioctl(p->tty_fd, TIOCSWINSZ, &ws);
+    } else if (p->fd >= 0) {
+        ioctl(p->fd, TIOCSWINSZ, &ws);
+    }
+}
+
+static void pane_resize(Pane *p, int w, int h) {
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (p->w == w && p->h == h && p->grid->w == w && p->grid->h == h) return;
+    grid_resize(&p->main_grid, w, h);
+    grid_resize(&p->alt_grid, w, h);
+    p->grid = p->on_alt ? &p->alt_grid : &p->main_grid;
+    if (p->cx >= w) p->cx = w - 1;
+    if (p->cy >= h) p->cy = h - 1;
+    p->scroll_top = 0;
+    p->scroll_bot = h - 1;
+    p->wrap_pending = 0;
+    p->w = w;
+    p->h = h;
+    pane_set_winsize(p, w, h);
+}
+
+static void pane_free(Pane *p) {
+    if (!p) return;
+    if (p->tty_fd >= 0) close(p->tty_fd);
+    if (p->fd >= 0) close(p->fd);
+    if (p->pid > 0) kill(p->pid, SIGHUP);
+    grid_free(&p->main_grid);
+    grid_free(&p->alt_grid);
+    free(p);
+}
+
+static Pane *pane_new(const char *cwd, int w, int h, const char *title) {
+    int master = open("/dev/ptmx", O_RDWR | O_NOCTTY);
+    if (master < 0) return NULL;
+    if (grantpt(master) < 0 || unlockpt(master) < 0) {
+        close(master);
+        return NULL;
+    }
+    const char *slave = ptsname(master);
+    if (!slave) {
+        close(master);
+        return NULL;
+    }
+    char slave_path[PATH_MAX];
+    snprintf(slave_path, sizeof slave_path, "%s", slave);
+
+    const char *shell = getenv("SHELL");
+    if (!shell || !*shell) shell = "/bin/sh";
+
+    /* Open the slave and give it its size before forking. The server keeps
+       this fd for the pane's lifetime: a pty with no slave open would report
+       EOF on the master (and on macOS TIOCSWINSZ only works on the slave). */
+    struct winsize iws;
+    memset(&iws, 0, sizeof iws);
+    iws.ws_col = (unsigned short)(w > 0 ? w : 80);
+    iws.ws_row = (unsigned short)(h > 0 ? h : 24);
+    int slave_fd = open(slave_path, O_RDWR | O_NOCTTY | O_NONBLOCK);
+    if (slave_fd < 0) {
+        close(master);
+        return NULL;
+    }
+    ioctl(slave_fd, TIOCSWINSZ, &iws);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(slave_fd);
+        close(master);
+        return NULL;
+    }
+    if (pid == 0) {
+        close(slave_fd);
+        setsid();
+        int fd = open(slave_path, O_RDWR);
+        if (fd < 0) _exit(127);
+        ioctl(fd, TIOCSCTTY, 0);
+        dup2(fd, 0);
+        dup2(fd, 1);
+        dup2(fd, 2);
+        if (fd > 2) close(fd);
+        long maxfd = sysconf(_SC_OPEN_MAX);
+        if (maxfd < 0 || maxfd > 4096) maxfd = 4096;
+        for (int i = 3; i < maxfd; i++) close(i);
+        signal(SIGPIPE, SIG_DFL);
+        signal(SIGCHLD, SIG_DFL);
+        signal(SIGHUP, SIG_DFL);
+        signal(SIGINT, SIG_DFL);
+        signal(SIGTERM, SIG_DFL);
+        setenv("TERM", "screen-256color", 1);
+        if (cwd && *cwd) chdir(cwd);
+        const char *base = strrchr(shell, '/');
+        base = base ? base + 1 : shell;
+        char arg0[PATH_MAX];
+        snprintf(arg0, sizeof arg0, "-%s", base);
+        char *args[2];
+        args[0] = arg0;
+        args[1] = NULL;
+        execvp(shell, args);
+        execl("/bin/sh", "-sh", (char *)NULL);
+        _exit(127);
+    }
+
+    fcntl(master, F_SETFL, fcntl(master, F_GETFL, 0) | O_NONBLOCK);
+
+    Pane *p = xcalloc(1, sizeof *p);
+    p->fd = master;
+    p->pid = pid;
+    p->alive = 1;
+    p->tty_fd = slave_fd;
+    p->cursor_visible = 1;
+    p->pen.fg = DEFAULT_COLOR;
+    p->pen.bg = DEFAULT_COLOR;
+    grid_init(&p->main_grid, w, h);
+    grid_init(&p->alt_grid, w, h);
+    p->grid = &p->main_grid;
+    p->scroll_bot = h - 1;
+    p->w = 0;
+    p->h = 0;
+    snprintf(p->title, sizeof p->title, "%s", title ? title : "shell");
+    pane_resize(p, w, h);
+    return p;
+}
+
+/* ------------------------------------------------------------------ */
+/* layout operations                                                  */
+/* ------------------------------------------------------------------ */
+
+static Layout *layout_leaf(Pane *p) {
+    Layout *l = xcalloc(1, sizeof *l);
+    l->type = L_LEAF;
+    l->pane = p;
+    return l;
+}
+
+static void layout_free(Layout *l) {
+    if (!l) return;
+    layout_free(l->a);
+    layout_free(l->b);
+    free(l);
+}
+
+static int layout_pane_count(Layout *l) {
+    if (!l) return 0;
+    if (l->type == L_LEAF) return 1;
+    return layout_pane_count(l->a) + layout_pane_count(l->b);
+}
+
+static void layout_apply(Layout *l, int x, int y, int w, int h) {
+    if (!l) return;
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    l->x = x;
+    l->y = y;
+    l->w = w;
+    l->h = h;
+
+    if (l->type == L_LEAF) {
+        Pane *p = l->pane;
+        int ph = h - 1;
+        if (ph < 1) ph = 1;
+        p->x = x;
+        p->y = y + 1;
+        pane_resize(p, w, ph);
+        return;
+    }
+
+    if (l->type == L_COLS) {
+        int avail = w - 1;
+        if (avail < 1) avail = 1;
+        int aw = (int)(avail * l->ratio + 0.5);
+        if (aw < 1) aw = 1;
+        if (aw > avail - 1) aw = avail - 1;
+        if (aw < 1) aw = 1;
+        if (avail - aw < 1) aw = avail;
+        l->ratio = (double)aw / (double)avail;
+        layout_apply(l->a, x, y, aw, h);
+        layout_apply(l->b, x + aw + 1, y, avail - aw, h);
+    } else {
+        int ah = (int)(h * l->ratio + 0.5);
+        if (ah < 2) ah = 2;
+        if (ah > h - 2) ah = h - 2;
+        if (ah < 1) ah = 1;
+        l->ratio = (double)ah / (double)h;
+        layout_apply(l->a, x, y, w, ah);
+        layout_apply(l->b, x, y + ah, w, h - ah);
+    }
+}
+
+static Pane *layout_first_pane(Layout *l) {
+    if (!l) return NULL;
+    while (l->type != L_LEAF) l = l->a;
+    return l->pane;
+}
+
+static void layout_collect(Layout *l, Pane **out, int *n) {
+    if (!l) return;
+    if (l->type == L_LEAF) {
+        out[(*n)++] = l->pane;
+        return;
+    }
+    layout_collect(l->a, out, n);
+    layout_collect(l->b, out, n);
+}
+
+static Layout *layout_find_leaf(Layout *l, Pane *p) {
+    if (!l) return NULL;
+    if (l->type == L_LEAF) return l->pane == p ? l : NULL;
+    Layout *r = layout_find_leaf(l->a, p);
+    return r ? r : layout_find_leaf(l->b, p);
+}
+
+static void window_renumber(Window *list) {
+    int i = 0;
+    for (Window *w = list; w; w = w->next) w->index = i++;
+    /* Pane numbers are absolute across the whole session, not per window, so
+       that the [N: title] labels stay stable no matter which window is
+       current. */
+    int id = 0;
+    for (Window *w = list; w; w = w->next) {
+        Pane *list2[128];
+        int n = 0;
+        if (w->root) layout_collect(w->root, list2, &n);
+        for (int j = 0; j < n; j++) list2[j]->id = id++;
+    }
+}
+
+static Window *window_new(Session *s, const char *name) {
+    Window *w = xcalloc(1, sizeof *w);
+    const char *shell = getenv("SHELL");
+    if (!shell || !*shell) shell = "/bin/sh";
+    const char *base = strrchr(shell, '/');
+    base = base ? base + 1 : shell;
+    snprintf(w->name, sizeof w->name, "%s", name ? name : base);
+
+    char host[256];
+    if (gethostname(host, sizeof host) < 0) snprintf(host, sizeof host, "localhost");
+    host[sizeof host - 1] = '\0';
+    char *dot = strchr(host, '.');
+    if (dot) *dot = '\0';
+
+    int pw = s->w > 0 ? s->w : 80;
+    int ph = s->h > 1 ? s->h - 2 : 23;
+    if (ph < 1) ph = 1;
+    Pane *p = pane_new(s->cwd, pw, ph, host);
+    if (!p) {
+        free(w);
+        return NULL;
+    }
+    w->root = layout_leaf(p);
+    w->active = p;
+
+    if (!s->windows) {
+        s->windows = w;
+    } else {
+        Window *tail = s->windows;
+        while (tail->next) tail = tail->next;
+        tail->next = w;
+    }
+    s->nwin++;
+    window_renumber(s->windows);
+    return w;
+}
+
+static void session_layout(Session *s) {
+    if (!s->cur || !s->cur->root) return;
+    int top = 1;
+    int h = s->h - top;
+    if (h < 1) h = 1;
+    layout_apply(s->cur->root, 0, top, s->w, h);
+}
+
+/* ------------------------------------------------------------------ */
+/* session helpers                                                    */
+/* ------------------------------------------------------------------ */
+
+static void socket_dir(char *out, size_t n) {
+    const char *base = getenv("XDG_RUNTIME_DIR");
+    if (!base || !*base) base = getenv("TMPDIR");
+    if (!base || !*base) base = "/tmp";
+    snprintf(out, n, "%s/moerx-%u", base, (unsigned)getuid());
+}
+
+static int valid_session_name(const char *s) {
+    if (!s || !*s || strlen(s) > 48) return 0;
+    for (const char *p = s; *p; p++) {
+        if (!(isalnum((unsigned char)*p) || *p == '-' || *p == '_')) return 0;
+    }
+    return 1;
+}
+
+static void make_socket_path(const char *name, char *out, size_t n) {
+    char dir[PATH_MAX];
+    socket_dir(dir, sizeof dir);
+    snprintf(out, n, "%s/%s.sock", dir, name);
+    if (strlen(out) >= 100) {
+        snprintf(out, n, "/tmp/moerx-%u/%s.sock", (unsigned)getuid(), name);
+    }
+}
+
+static void client_message(Client *c, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(c->msg, sizeof c->msg, fmt, ap);
+    va_end(ap);
+    c->msg_until = now_ms() + MSG_TIME;
+}
+
+/* ------------------------------------------------------------------ */
+/* drawing into the composed screen                                   */
+/* ------------------------------------------------------------------ */
+
+static void scr_put(Grid *g, int x, int y, uint32_t ch, int fg, int bg, int attr) {
+    Cell *c = grid_at(g, x, y);
+    if (!c) return;
+    c->ch = ch;
+    c->fg = fg;
+    c->bg = bg;
+    c->attr = (uint8_t)attr;
+}
+
+static void scr_put_wide(Grid *g, int x, int y, uint32_t ch, int fg, int bg, int attr) {
+    int w = cp_width(ch);
+    if (w < 1) w = 1;
+    scr_put(g, x, y, ch, fg, bg, attr);
+    if (w == 2) scr_put(g, x + 1, y, WIDE_CONT, fg, bg, attr);
+}
+
+static int text_width(const char *s) {
+    int n = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        uint32_t cp;
+        int used = utf8_decode(p, (int)strlen((const char *)p), &cp);
+        int w = cp_width(cp);
+        if (w < 0) w = 1;
+        n += w;
+        p += used;
+    }
+    return n;
+}
+
+static int draw_text(Grid *g, int x, int y, const char *s, int fg, int bg, int attr) {
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        uint32_t cp;
+        int used = utf8_decode(p, (int)strlen((const char *)p), &cp);
+        int w = cp_width(cp);
+        if (w < 0) w = 1;
+        if (cp >= 32 && cp != 0x7f) scr_put_wide(g, x, y, cp, fg, bg, attr);
+        x += w;
+        p += used;
+    }
+    return x;
+}
+
+/* Pane borders are thin box-drawing lines drawn over the terminal's own
+ * background. The row above each pane doubles as its title bar. Borders are
+ * collected into a mask first so that crossing lines get the right junction
+ * glyph no matter which pane is visited first. */
+#define B_UP    0x1
+#define B_DOWN  0x2
+#define B_LEFT  0x4
+#define B_RIGHT 0x8
+
+static void border_mark(uint8_t *m, int w, int h, int x, int y, uint8_t bits) {
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    m[y * w + x] |= bits;
+}
+
+static void border_collect(uint8_t *m, int w, int h, Layout *l) {
+    if (!l || l->w < 1 || l->h < 1) return;
+    if (l->type == L_LEAF) {
+        int y = l->y;
+        int end = l->x + l->w;
+        if (y < 0 || y >= h) return;
+        for (int x = l->x; x < end; x++) {
+            uint8_t bits = 0;
+            if (x > l->x || l->w == 1) bits |= B_LEFT;
+            if (x < end - 1 || l->w == 1) bits |= B_RIGHT;
+            border_mark(m, w, h, x, y, bits);
+        }
+        return;
+    }
+    if (l->type == L_COLS) {
+        int ax = l->x + l->a->w;
+        int end = l->y + l->h;
+        for (int y = l->y; y < end; y++) {
+            uint8_t bits = 0;
+            if (y > l->y || l->h == 1) bits |= B_UP;
+            if (y < end - 1 || l->h == 1) bits |= B_DOWN;
+            border_mark(m, w, h, ax, y, bits);
+        }
+    }
+    border_collect(m, w, h, l->a);
+    border_collect(m, w, h, l->b);
+}
+
+/* Fill in the missing half of a T-junction: a line that ends next to a
+ * perpendicular one should meet it instead of leaving a one-cell gap. */
+static void border_join(uint8_t *m, int w, int h) {
+    uint8_t *add = xcalloc((size_t)w * (size_t)h, 1);
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            uint8_t b = m[y * w + x];
+            uint8_t extra = 0;
+            if (b & (B_UP | B_DOWN)) {
+                if (x > 0 && (m[y * w + x - 1] & (B_LEFT | B_RIGHT)))
+                    extra |= B_LEFT;
+                if (x + 1 < w && (m[y * w + x + 1] & (B_LEFT | B_RIGHT)))
+                    extra |= B_RIGHT;
+            }
+            if (b & (B_LEFT | B_RIGHT)) {
+                if (y > 0 && (m[(y - 1) * w + x] & (B_UP | B_DOWN)))
+                    extra |= B_UP;
+                if (y + 1 < h && (m[(y + 1) * w + x] & (B_UP | B_DOWN)))
+                    extra |= B_DOWN;
+            }
+            add[y * w + x] = extra;
+        }
+    }
+    for (int i = 0; i < w * h; i++) m[i] |= add[i];
+    free(add);
+}
+
+static uint32_t border_glyph(uint8_t b) {
+    switch (b & 0xF) {
+    case B_UP | B_DOWN:                    return 0x2502; /* │ */
+    case B_LEFT | B_RIGHT:                 return 0x2500; /* ─ */
+    case B_DOWN | B_RIGHT:                 return 0x250C; /* ┌ */
+    case B_DOWN | B_LEFT:                  return 0x2510; /* ┐ */
+    case B_UP | B_RIGHT:                   return 0x2514; /* └ */
+    case B_UP | B_LEFT:                    return 0x2518; /* ┘ */
+    case B_UP | B_DOWN | B_RIGHT:          return 0x251C; /* ├ */
+    case B_UP | B_DOWN | B_LEFT:           return 0x2524; /* ┤ */
+    case B_DOWN | B_LEFT | B_RIGHT:        return 0x252C; /* ┬ */
+    case B_UP | B_LEFT | B_RIGHT:          return 0x2534; /* ┴ */
+    case B_UP | B_DOWN | B_LEFT | B_RIGHT: return 0x253C; /* ┼ */
+    case B_UP: case B_DOWN:                return 0x2502;
+    case B_LEFT: case B_RIGHT:             return 0x2500;
+    default:                               return 0;
+    }
+}
+
+static void border_render(Grid *g, const uint8_t *m) {
+    for (int y = 0; y < g->h; y++) {
+        for (int x = 0; x < g->w; x++) {
+            uint8_t b = m[y * g->w + x];
+            if (!b) continue;
+            uint32_t ch = border_glyph(b);
+            if (ch) scr_put(g, x, y, ch, C_BORDER, DEFAULT_COLOR, 0);
+        }
+    }
+}
+
+static void draw_window_label(Grid *g, Window *win, Pane *p) {
+    int active = (p == win->active);
+    int fg1 = active ? C_WHITE : C_GREY;
+    int fg2 = active ? C_YELLOW : 3;
+    int fg3 = active ? C_BWHITE : C_BLUE;
+    int x = p->x;
+    int y = p->y - 1;
+    int end = p->x + p->w;
+    if (y < 0 || y >= g->h) return;
+    if (x < end) scr_put(g, x++, y, '[', fg1, DEFAULT_COLOR, 0);
+    char num[32];
+    snprintf(num, sizeof num, "%d", p->id);
+    x = draw_text(g, x, y, num, fg1, DEFAULT_COLOR, 0);
+    if (x < end) scr_put(g, x++, y, ':', fg2, DEFAULT_COLOR, 0);
+    if (x < end) scr_put(g, x++, y, ' ', fg2, DEFAULT_COLOR, 0);
+    const char *title = p->title[0] ? p->title : win->name;
+    const unsigned char *s = (const unsigned char *)title;
+    while (*s && x < end - 1) {
+        uint32_t cp;
+        int used = utf8_decode(s, (int)strlen((const char *)s), &cp);
+        int w = cp_width(cp);
+        if (w < 1) w = 1;
+        if (x + w > end - 1) break;
+        scr_put_wide(g, x, y, cp, fg3, DEFAULT_COLOR, 0);
+        x += w;
+        s += used;
+    }
+    if (x < end) scr_put(g, x, y, ']', fg1, DEFAULT_COLOR, 0);
+}
+
+static void draw_layout(Grid *g, Layout *l) {
+    if (!l || l->w < 1 || l->h < 1) return;
+    if (l->type == L_LEAF) {
+        Pane *p = l->pane;
+        int cw = p->grid->w;
+        int ch = p->grid->h;
+        for (int yy = 0; yy < p->h && yy < ch; yy++) {
+            for (int xx = 0; xx < p->w && xx < cw; xx++) {
+                Cell *src = grid_at(p->grid, xx, yy);
+                Cell *dst = grid_at(g, p->x + xx, p->y + yy);
+                if (src && dst) *dst = *src;
+            }
+        }
+        return;
+    }
+    draw_layout(g, l->a);
+    draw_layout(g, l->b);
+}
+
+static void draw_labels(Grid *g, Layout *l, Window *win) {
+    if (!l || l->w < 1 || l->h < 1) return;
+    if (l->type == L_LEAF) {
+        draw_window_label(g, win, l->pane);
+        return;
+    }
+    draw_labels(g, l->a, win);
+    draw_labels(g, l->b, win);
+}
+
+static void status_right_draw(Grid *g, int rx, int y, const char *host,
+                              const char *clock) {
+    int px = draw_text(g, rx, y, " [", P_STATUS, DEFAULT_COLOR, 0);
+    px = draw_text(g, px, y, host, P_ACCENT, DEFAULT_COLOR, 0);
+    px = draw_text(g, px, y, "]", P_STATUS, DEFAULT_COLOR, 0);
+    px = draw_text(g, px, y, " ", P_STATUS, DEFAULT_COLOR, 0);
+    px = draw_text(g, px, y, clock, P_STATUS, DEFAULT_COLOR, 0);
+    draw_text(g, px, y, " ", P_STATUS, DEFAULT_COLOR, 0);
+}
+
+static void status_draw(Grid *g, Session *s, Client *c) {
+    if (s->h < 1) return;
+    for (int x = 0; x < s->w; x++) {
+        scr_put(g, x, 0, ' ', P_STATUS, DEFAULT_COLOR, 0);
+    }
+
+    int x = 0;
+    x = draw_text(g, x, 0, " ", P_STATUS, DEFAULT_COLOR, 0);
+    x = draw_text(g, x, 0, "[", P_STATUS, DEFAULT_COLOR, 0);
+    x = draw_text(g, x, 0, "moerx", P_ACCENT, DEFAULT_COLOR, 0);
+    x = draw_text(g, x, 0, "]", P_STATUS, DEFAULT_COLOR, 0);
+    x = draw_text(g, x, 0, " ", P_STATUS, DEFAULT_COLOR, 0);
+    int left_len = x;
+    if (left_len > 20) left_len = 20;
+
+    char host[256];
+    if (gethostname(host, sizeof host) < 0) snprintf(host, sizeof host, "localhost");
+    host[sizeof host - 1] = '\0';
+    char *dot = strchr(host, '.');
+    if (dot) *dot = '\0';
+
+    time_t t = time(NULL);
+    struct tm tmv;
+    localtime_r(&t, &tmv);
+    char clockbuf[32];
+    strftime(clockbuf, sizeof clockbuf, "%H:%M:%S", &tmv);
+
+    char right[256];
+    snprintf(right, sizeof right, " [%s] %s ", host, clockbuf);
+    if ((int)strlen(right) > 50) right[50] = '\0';
+    int right_len = text_width(right);
+    if (right_len > s->w) right_len = s->w;
+    int rx = s->w - right_len;
+    if (rx < 0) rx = 0;
+    status_right_draw(g, rx, 0, host, clockbuf);
+
+    int total = 0;
+    for (Window *w = s->windows; w; w = w->next) {
+        char num[32], flags[8];
+        snprintf(num, sizeof num, "%d", w->index);
+        flags[0] = 0;
+        if (w == s->cur) strcat(flags, "*");
+        else if (w == s->last) strcat(flags, "-");
+        total += (int)strlen(num) + 1 + text_width(w->name) + (int)strlen(flags) + 1;
+    }
+    int need = s->w - right_len;
+    int start = need - total;
+    if (start < left_len) start = left_len;
+    int wx = start;
+    for (Window *w = s->windows; w; w = w->next) {
+        char num[32], flags[8];
+        snprintf(num, sizeof num, "%d", w->index);
+        flags[0] = 0;
+        if (w == s->cur) strcat(flags, "*");
+        else if (w == s->last) strcat(flags, "-");
+        int fg_name = (w == s->cur) ? P_CURRENT : P_STATUS;
+        wx = draw_text(g, wx, 0, num, P_STATUS, DEFAULT_COLOR, 0);
+        wx = draw_text(g, wx, 0, ":", P_ACCENT, DEFAULT_COLOR, 0);
+        wx = draw_text(g, wx, 0, w->name, fg_name, DEFAULT_COLOR, 0);
+        wx = draw_text(g, wx, 0, flags, P_ACCENT, DEFAULT_COLOR, 0);
+        wx = draw_text(g, wx, 0, " ", P_ACCENT, DEFAULT_COLOR, 0);
+        if (wx >= need) break;
+    }
+
+    const char *overlay = NULL;
+    if (c->mode == 1 || c->mode == 3) overlay = c->prompt;
+    else if (c->msg[0] && c->msg_until > now_ms()) overlay = c->msg;
+    if (overlay) {
+        int limit = s->w - right_len;
+        if (limit > s->w) limit = s->w;
+        if (limit < 1) limit = 1;
+        for (int i = 0; i < limit; i++) scr_put(g, i, 0, ' ', P_MSG, P_MSG_BG, 0);
+        int ox = 0;
+        const unsigned char *p = (const unsigned char *)overlay;
+        while (*p && ox < limit) {
+            uint32_t cp;
+            int used = utf8_decode(p, (int)strlen((const char *)p), &cp);
+            int w = cp_width(cp);
+            if (w < 1) w = 1;
+            if (ox + w > limit) break;
+            scr_put_wide(g, ox, 0, cp, P_MSG, P_MSG_BG, 0);
+            ox += w;
+            p += used;
+        }
+    }
+
+    /* keep host/time visible even if a message or window list is long */
+    status_right_draw(g, rx, 0, host, clockbuf);
+}
+
+static void menu_draw(Grid *g, Session *s, Client *c) {
+    Window *list[256];
+    int n = 0;
+    for (Window *w = s->windows; w && n < 256; w = w->next) list[n++] = w;
+    if (n == 0) return;
+    if (c->menu_sel < 0) c->menu_sel = 0;
+    if (c->menu_sel >= n) c->menu_sel = n - 1;
+
+    int width = 24;
+    for (int i = 0; i < n; i++) {
+        int wl = text_width(list[i]->name) + 8;
+        if (wl > width) width = wl;
+    }
+    if (width > s->w - 2) width = s->w - 2;
+    if (width < 10) width = 10;
+    int x0 = 1, y0 = 1;
+    int h = n + 2;
+    if (y0 + h > s->h) h = s->h - y0;
+    for (int y = y0; y < y0 + h; y++) {
+        for (int x = x0; x < x0 + width; x++) {
+            scr_put(g, x, y, ' ', C_BLUE, C_GREY, 0);
+        }
+    }
+    int rows = h - 2;
+    for (int i = 0; i < rows && i < n; i++) {
+        char line[320];
+        snprintf(line, sizeof line, " %d: %s ", list[i]->index, list[i]->name);
+        int sel = (i == c->menu_sel);
+        int fg = sel ? C_BLACK : C_BLUE;
+        int bg = sel ? C_BLUE : C_GREY;
+        int x = x0;
+        for (const char *p = line; *p && x < x0 + width; p++) {
+            scr_put(g, x++, y0 + 1 + i, (unsigned char)*p, fg, bg, 0);
+        }
+        while (x < x0 + width) scr_put(g, x++, y0 + 1 + i, ' ', fg, bg, 0);
+    }
+}
+
+static void compose(Session *s, Client *c, Grid *out) {
+    grid_init(out, s->w, s->h);
+    grid_clear(out, DEFAULT_COLOR);
+    status_draw(out, s, c);
+    if (s->cur && s->cur->root) {
+        size_t n = (size_t)s->w * (size_t)s->h;
+        uint8_t *mask = xcalloc(n, 1);
+        border_collect(mask, s->w, s->h, s->cur->root);
+        border_join(mask, s->w, s->h);
+        draw_layout(out, s->cur->root);
+        border_render(out, mask);
+        draw_labels(out, s->cur->root, s->cur);
+        free(mask);
+    }
+    if (c->mode == 2) menu_draw(out, s, c);
+}
+
+static void cursor_for(Session *s, Client *c, int *x, int *y, int *visible) {
+    *visible = 0;
+    *x = *y = 0;
+    if (c->locked) return;
+    if (c->mode == 1) {
+        int len = text_width(c->prompt);
+        *x = len;
+        *y = 0;
+        if (*x >= s->w) *x = s->w - 1;
+        *visible = 1;
+        return;
+    }
+    if (c->mode != 0) return;
+    if (!s->cur || !s->cur->active) return;
+    Pane *p = s->cur->active;
+    if (!p->cursor_visible) return;
+    int px = p->x + p->cx;
+    int py = p->y + p->cy;
+    if (px < p->x || py < p->y || px >= p->x + p->w || py >= p->y + p->h) return;
+    if (px >= s->w || py >= s->h) return;
+    *x = px;
+    *y = py;
+    *visible = 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* frame output                                                       */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    char *p;
+    size_t len, cap;
+} Buf;
+
+static void buf_add(Buf *b, const void *data, size_t n) {
+    if (b->len + n + 1 > b->cap) {
+        size_t cap = b->cap ? b->cap : 4096;
+        while (cap < b->len + n + 1) cap *= 2;
+        b->p = xrealloc(b->p, cap);
+        b->cap = cap;
+    }
+    memcpy(b->p + b->len, data, n);
+    b->len += n;
+    b->p[b->len] = 0;
+}
+
+static void buf_puts(Buf *b, const char *s) {
+    buf_add(b, s, strlen(s));
+}
+
+static void buf_printf(Buf *b, const char *fmt, ...) {
+    char tmp[512];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(tmp, sizeof tmp, fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    if (n >= (int)sizeof tmp) n = (int)sizeof tmp - 1;
+    buf_add(b, tmp, (size_t)n);
+}
+
+static int cell_same(Cell *a, Cell *b) {
+    return a->ch == b->ch && a->fg == b->fg && a->bg == b->bg && a->attr == b->attr;
+}
+
+static int nearest_cube_level(int v, int *idx) {
+    static const int levels[6] = { 0, 95, 135, 175, 215, 255 };
+    int best = 0, bestd = -1;
+    for (int i = 0; i < 6; i++) {
+        int d = v - levels[i];
+        d *= d;
+        if (bestd < 0 || d < bestd) {
+            bestd = d;
+            best = i;
+        }
+    }
+    *idx = best;
+    return levels[best];
+}
+
+/* Map a 24-bit colour to the nearest xterm-256 palette entry. */
+static int color256_from_rgb(int r, int g, int b) {
+    int ri, gi, bi;
+    int cr = nearest_cube_level(r, &ri);
+    int cg = nearest_cube_level(g, &gi);
+    int cb = nearest_cube_level(b, &bi);
+    int cube = 16 + 36 * ri + 6 * gi + bi;
+    long cubed = (long)(r - cr) * (r - cr) +
+                 (long)(g - cg) * (g - cg) +
+                 (long)(b - cb) * (b - cb);
+
+    int gray = (r * 299 + g * 587 + b * 114) / 1000;
+    int gidx = (gray - 8 + 5) / 10;
+    if (gidx < 0) gidx = 0;
+    if (gidx > 23) gidx = 23;
+    int gv = 8 + gidx * 10;
+    long grayd = (long)(r - gv) * (r - gv) +
+                 (long)(g - gv) * (g - gv) +
+                 (long)(b - gv) * (b - gv);
+
+    if (grayd < cubed) return 232 + gidx;
+    return cube;
+}
+
+static void emit_color(Buf *b, int32_t col, int bg, int truecolor) {
+    if (col == DEFAULT_COLOR) {
+        buf_puts(b, bg ? "49" : "39");
+        return;
+    }
+    if (col & RGB_FLAG) {
+        int r = (col >> 16) & 0xFF, g = (col >> 8) & 0xFF, bl = col & 0xFF;
+        if (truecolor) {
+            buf_printf(b, "%d;2;%d;%d;%d", bg ? 48 : 38, r, g, bl);
+            return;
+        }
+        col = color256_from_rgb(r, g, bl);
+    }
+    int v = col & 0xFF;
+    buf_printf(b, "%d;5;%d", bg ? 48 : 38, v);
+}
+
+static void emit_sgr(Buf *b, int32_t fg, int32_t bg, int attr, int truecolor) {
+    buf_puts(b, "\x1b[0");
+    if (attr & A_BOLD) buf_puts(b, ";1");
+    if (attr & A_DIM) buf_puts(b, ";2");
+    if (attr & A_ITALIC) buf_puts(b, ";3");
+    if (attr & A_ULINE) buf_puts(b, ";4");
+    if (attr & A_REV) buf_puts(b, ";7");
+    buf_puts(b, ";");
+    emit_color(b, fg, 0, truecolor);
+    buf_puts(b, ";");
+    emit_color(b, bg, 1, truecolor);
+    buf_puts(b, "m");
+}
+
+static void buf_utf8(Buf *b, uint32_t cp) {
+    char tmp[4];
+    int n;
+    if (cp < 0x80) {
+        tmp[0] = (char)cp;
+        n = 1;
+    } else if (cp < 0x800) {
+        tmp[0] = (char)(0xC0 | (cp >> 6));
+        tmp[1] = (char)(0x80 | (cp & 0x3F));
+        n = 2;
+    } else if (cp < 0x10000) {
+        tmp[0] = (char)(0xE0 | (cp >> 12));
+        tmp[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        tmp[2] = (char)(0x80 | (cp & 0x3F));
+        n = 3;
+    } else {
+        tmp[0] = (char)(0xF0 | (cp >> 18));
+        tmp[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        tmp[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        tmp[3] = (char)(0x80 | (cp & 0x3F));
+        n = 4;
+    }
+    buf_add(b, tmp, (size_t)n);
+}
+
+static void draw_frame(Session *s, Client *c, Grid *scr) {
+    Buf b;
+    memset(&b, 0, sizeof b);
+
+    /* A client larger than the session gets the screen centred. */
+    int offx = c->cols > scr->w ? (c->cols - scr->w) / 2 : 0;
+    int offy = c->rows > scr->h ? (c->rows - scr->h) / 2 : 0;
+
+    int invalid = !c->prev_valid || c->prev.w != scr->w || c->prev.h != scr->h;
+    if (invalid) {
+        if (c->prev_valid) {
+            grid_free(&c->prev);
+            c->prev_valid = 0;
+        }
+        grid_init(&c->prev, scr->w, scr->h);
+        grid_clear(&c->prev, -2);
+        buf_puts(&b, "\x1b[2J\x1b[H");
+    }
+    {
+        char title[160];
+        snprintf(title, sizeof title, "[moerx] %s", s->cur ? s->cur->name : "moerx");
+        if (strcmp(title, c->title) != 0) {
+            buf_printf(&b, "\x1b]2;%s\x07", title);
+            snprintf(c->title, sizeof c->title, "%s", title);
+        }
+    }
+
+    for (int y = 0; y < scr->h; y++) {
+        int first = -1, last = -1;
+        for (int x = 0; x < scr->w; x++) {
+            Cell *a = grid_at(scr, x, y);
+            Cell *p = grid_at(&c->prev, x, y);
+            if (!cell_same(a, p)) {
+                if (first < 0) first = x;
+                last = x;
+            }
+        }
+        if (first < 0) continue;
+        if (first > 0 && grid_at(scr, first, y)->ch == WIDE_CONT) first--;
+        if (last + 1 < scr->w && grid_at(scr, last + 1, y)->ch == WIDE_CONT) last++;
+        buf_printf(&b, "\x1b[%d;%dH", y + 1 + offy, first + 1 + offx);
+
+        int32_t cf = -3, cb = -3;
+        int ca = -1;
+        for (int x = first; x <= last; x++) {
+            Cell *cell = grid_at(scr, x, y);
+            if (cell->ch == WIDE_CONT) continue;
+            if (cell->fg != cf || cell->bg != cb || cell->attr != ca) {
+                emit_sgr(&b, cell->fg, cell->bg, cell->attr, c->truecolor);
+                cf = cell->fg;
+                cb = cell->bg;
+                ca = cell->attr;
+            }
+            buf_utf8(&b, cell->ch);
+        }
+        for (int x = first; x <= last; x++) {
+            Cell *dst = grid_at(&c->prev, x, y);
+            Cell *src = grid_at(scr, x, y);
+            *dst = *src;
+        }
+    }
+
+    int cx, cy, vis;
+    cursor_for(s, c, &cx, &cy, &vis);
+    buf_puts(&b, "\x1b[0m");
+    if (vis && cy == 0) vis = 0;
+    if (vis) {
+        buf_printf(&b, "\x1b[%d;%dH\x1b[?25h", cy + 1 + offy, cx + 1 + offx);
+    } else {
+        buf_puts(&b, "\x1b[?25l");
+    }
+    c->prev_valid = 1;
+
+    if (b.len && send_msg(c->fd, S_DRAW, b.p, (uint32_t)b.len) < 0) {
+        c->dead = 1;
+    }
+    free(b.p);
+}
+
+/* ------------------------------------------------------------------ */
+/* protocol and session plumbing                                      */
+/* ------------------------------------------------------------------ */
+
+static int write_all(int fd, const void *data, size_t len) {
+    const char *p = data;
+    while (len > 0) {
+        ssize_t n = write(fd, p, len);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (n == 0) return -1;
+        p += n;
+        len -= (size_t)n;
+    }
+    return 0;
+}
+
+static int send_msg(int fd, uint32_t type, const void *data, uint32_t len) {
+    MsgHdr h;
+    h.type = type;
+    h.len = len;
+    if (write_all(fd, &h, sizeof h) < 0) return -1;
+    if (len && write_all(fd, data, len) < 0) return -1;
+    return 0;
+}
+
+static void short_hostname(char *out, size_t n) {
+    if (gethostname(out, n) < 0) snprintf(out, n, "localhost");
+    out[n - 1] = '\0';
+    char *dot = strchr(out, '.');
+    if (dot) *dot = '\0';
+}
+
+static void invalidate_clients(Session *s) {
+    for (Client *c = s->clients; c; c = c->next) {
+        if (c->prev_valid) {
+            grid_free(&c->prev);
+            c->prev_valid = 0;
+        }
+    }
+}
+
+static void session_recalc_size(Session *s) {
+    int cols = 0, rows = 0, any = 0;
+    for (Client *c = s->clients; c; c = c->next) {
+        if (!c->attached) continue;
+        if (!any || c->cols < cols) cols = c->cols;
+        if (!any || c->rows < rows) rows = c->rows;
+        any = 1;
+    }
+    if (!any) return;
+    if (cols < MIN_COLS) cols = MIN_COLS;
+    if (rows < MIN_ROWS) rows = MIN_ROWS;
+    if (cols == s->w && rows == s->h) return;
+    s->w = cols;
+    s->h = rows;
+    session_layout(s);
+    invalidate_clients(s);
+}
+
+static void window_free(Window *w) {
+    if (!w) return;
+    if (w->root) {
+        Pane *list[128];
+        int n = 0;
+        layout_collect(w->root, list, &n);
+        for (int i = 0; i < n; i++) pane_free(list[i]);
+        layout_free(w->root);
+    }
+    free(w);
+}
+
+static void select_window(Session *s, Window *w) {
+    if (!w || w == s->cur) return;
+    s->last = s->cur;
+    s->cur = w;
+    session_layout(s);
+    invalidate_clients(s);
+}
+
+static void next_window(Session *s, int dir) {
+    if (!s->cur || !s->windows) return;
+    Window *w;
+    if (dir > 0) {
+        w = s->cur->next ? s->cur->next : s->windows;
+    } else {
+        w = s->windows;
+        while (w->next) w = w->next;
+        if (s->cur != s->windows) {
+            Window *p = s->windows;
+            while (p->next && p->next != s->cur) p = p->next;
+            w = p;
+        }
+    }
+    select_window(s, w);
+}
+
+static void new_window(Session *s) {
+    Window *w = window_new(s, NULL);
+    if (!w) return;
+    s->last = s->cur;
+    s->cur = w;
+    session_layout(s);
+    invalidate_clients(s);
+}
+
+static void select_window_index(Session *s, int index) {
+    for (Window *w = s->windows; w; w = w->next) {
+        if (w->index == index) {
+            select_window(s, w);
+            return;
+        }
+    }
+}
+
+static void switch_last_window(Session *s) {
+    if (!s->last || s->last == s->cur) return;
+    Window *t = s->cur;
+    s->cur = s->last;
+    s->last = t;
+    session_layout(s);
+    invalidate_clients(s);
+}
+
+static Pane *host_pane_new(Session *s, int w, int h) {
+    char host[128];
+    short_hostname(host, sizeof host);
+    return pane_new(s->cwd, w, h, host);
+}
+
+static void split_pane(Session *s, int type) {
+    Window *w = s->cur;
+    if (!w || !w->active) return;
+    if (layout_pane_count(w->root) >= 60) return;   /* fixed-size pane lists */
+    Pane *old = w->active;
+    Layout *leaf = layout_find_leaf(w->root, old);
+    if (!leaf) return;
+    int nw = old->w / 2;
+    int nh = old->h / 2;
+    if (nw < 1) nw = 1;
+    if (nh < 1) nh = 1;
+    Pane *np = host_pane_new(s, nw, nh);
+    if (!np) return;
+
+    Layout *node = xcalloc(1, sizeof *node);
+    Layout *nl = layout_leaf(np);
+    node->type = type;
+    node->ratio = 0.5;
+    node->parent = leaf->parent;
+    node->a = leaf;
+    node->b = nl;
+    leaf->parent = node;
+    nl->parent = node;
+
+    if (!node->parent) {
+        w->root = node;
+    } else if (node->parent->a == leaf) {
+        node->parent->a = node;
+    } else {
+        node->parent->b = node;
+    }
+    w->active = np;
+    window_renumber(s->windows);
+    session_layout(s);
+    invalidate_clients(s);
+}
+
+static void kill_active_pane(Session *s) {
+    Window *w = s->cur;
+    if (!w || !w->active) return;
+    Pane *p = w->active;
+    Layout *leaf = layout_find_leaf(w->root, p);
+    if (!leaf) return;
+
+    if (leaf == w->root) {
+        Window *prev = NULL;
+        for (Window *it = s->windows; it; it = it->next) {
+            if (it == w) break;
+            prev = it;
+        }
+        Window *next = w->next;
+        if (prev) prev->next = next;
+        else s->windows = next;
+        s->nwin--;
+        if (s->cur == w) s->cur = next ? next : prev;
+        if (s->last == w) s->last = NULL;
+        window_free(w);
+        if (!s->windows) s->running = 0;
+    } else {
+        Layout *par = leaf->parent;
+        Layout *sib = (par->a == leaf) ? par->b : par->a;
+        if (par->parent) {
+            if (par->parent->a == par) par->parent->a = sib;
+            else par->parent->b = sib;
+        } else {
+            w->root = sib;
+        }
+        sib->parent = par->parent;
+        free(leaf);
+        free(par);
+        pane_free(p);
+        w->active = layout_first_pane(w->root);
+    }
+    window_renumber(s->windows);
+    if (s->cur) {
+        session_layout(s);
+        invalidate_clients(s);
+    }
+}
+
+static void kill_active_window(Session *s) {
+    Window *w = s->cur;
+    if (!w) return;
+    Window *prev = NULL;
+    for (Window *it = s->windows; it; it = it->next) {
+        if (it == w) break;
+        prev = it;
+    }
+    Window *next = w->next;
+    if (prev) prev->next = next;
+    else s->windows = next;
+    s->nwin--;
+    if (s->cur == w) s->cur = next ? next : prev;
+    if (s->last == w) s->last = NULL;
+    window_free(w);
+    if (!s->windows) s->running = 0;
+    window_renumber(s->windows);
+    if (s->cur) {
+        session_layout(s);
+        invalidate_clients(s);
+    }
+}
+
+static int rect_overlap(int a0, int a1, int b0, int b1) {
+    int s = a0 > b0 ? a0 : b0;
+    int e = a1 < b1 ? a1 : b1;
+    return e - s;
+}
+
+static void select_pane_dir(Session *s, int dx, int dy) {
+    Window *w = s->cur;
+    if (!w || !w->active) return;
+    Pane *a = w->active;
+    Pane *list[128];
+    int n = 0;
+    layout_collect(w->root, list, &n);
+    Pane *best = NULL;
+    long bestscore = 0;
+    for (int i = 0; i < n; i++) {
+        Pane *p = list[i];
+        if (p == a) continue;
+        int acx = a->x * 2 + a->w;
+        int acy = a->y * 2 + a->h;
+        int pcx = p->x * 2 + p->w;
+        int pcy = p->y * 2 + p->h;
+        int ddx = pcx - acx;
+        int ddy = pcy - acy;
+        int ok = 0;
+        if (dx < 0) ok = ddx < 0;
+        else if (dx > 0) ok = ddx > 0;
+        else if (dy < 0) ok = ddy < 0;
+        else if (dy > 0) ok = ddy > 0;
+        if (!ok) continue;
+        int overlap = (dx != 0)
+            ? rect_overlap(a->y, a->y + a->h, p->y, p->y + p->h)
+            : rect_overlap(a->x, a->x + a->w, p->x, p->x + p->w);
+        long d = (dx != 0) ? labs((long)ddx) : labs((long)ddy);
+        long score = d * 1000 - overlap;
+        if (!best || score < bestscore) {
+            best = p;
+            bestscore = score;
+        }
+    }
+    if (best) {
+        w->active = best;
+        invalidate_clients(s);
+    }
+}
+
+static void cycle_pane(Session *s, int dir) {
+    Window *w = s->cur;
+    if (!w || !w->active) return;
+    Pane *list[128];
+    int n = 0;
+    layout_collect(w->root, list, &n);
+    if (n < 2) return;
+    int idx = 0;
+    for (int i = 0; i < n; i++) if (list[i] == w->active) idx = i;
+    idx = (idx + dir + n) % n;
+    w->active = list[idx];
+    invalidate_clients(s);
+}
+
+static void resize_pane_dir(Session *s, int dx, int dy, int amount) {
+    Window *w = s->cur;
+    if (!w || !w->active) return;
+    Layout *leaf = layout_find_leaf(w->root, w->active);
+    if (!leaf || !leaf->parent) return;
+    int want = (dx != 0) ? L_COLS : L_ROWS;
+    Layout *l = leaf->parent;
+    while (l && l->type != want) l = l->parent;
+    if (!l) return;
+    double total = (l->type == L_COLS) ? (double)(l->w - 1) : (double)l->h;
+    if (total < 1) return;
+    double step = (double)amount / total;
+    if (dx < 0 || dy < 0) l->ratio -= step;
+    else l->ratio += step;
+    if (l->ratio < 0.05) l->ratio = 0.05;
+    if (l->ratio > 0.95) l->ratio = 0.95;
+    session_layout(s);
+    invalidate_clients(s);
+}
+
+static void rename_active_window(Session *s, const char *name) {
+    if (!s->cur || !name || !*name) return;
+    snprintf(s->cur->name, sizeof s->cur->name, "%s", name);
+    invalidate_clients(s);
+}
+
+/* ------------------------------------------------------------------ */
+/* client modes and key bindings                                      */
+/* ------------------------------------------------------------------ */
+
+#define K_UP    0x1001
+#define K_DOWN  0x1002
+#define K_RIGHT 0x1003
+#define K_LEFT  0x1004
+#define K_BTAB  0x1005
+
+static void client_invalidate(Client *c) {
+    if (c->prev_valid) {
+        grid_free(&c->prev);
+        c->prev_valid = 0;
+    }
+}
+
+static void client_detach(Client *c, const char *msg) {
+    if (c->fd < 0) return;
+    send_msg(c->fd, S_DETACH, msg, (uint32_t)strlen(msg) + 1);
+    close(c->fd);
+    c->fd = -1;
+    c->dead = 1;
+}
+
+static void client_lock(Client *c) {
+    c->locked = 1;
+    c->mode = 0;
+    c->prefix_pending = 0;
+    const char *text = "[moerx] locked - press Enter to unlock";
+    int tw = text_width(text);
+    int x = (c->cols - tw) / 2;
+    int y = c->rows / 2;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    char out[512];
+    int n = snprintf(out, sizeof out, "\x1b[0m\x1b[2J\x1b[H\x1b[?25l\x1b[%d;%dH%s", y + 1, x + 1, text);
+    if (n > 0 && c->fd >= 0) send_msg(c->fd, S_DRAW, out, (uint32_t)n);
+    client_invalidate(c);
+}
+
+static void client_unlock(Client *c) {
+    c->locked = 0;
+    if (c->fd >= 0) {
+        const char *seq = "\x1b[2J\x1b[H";
+        send_msg(c->fd, S_DRAW, seq, (uint32_t)strlen(seq));
+    }
+    client_invalidate(c);
+}
+
+static void start_menu(Client *c, Session *s) {
+    c->mode = 2;
+    c->menu_sel = 0;
+    int i = 0;
+    for (Window *w = s->windows; w; w = w->next) {
+        if (w == s->cur) c->menu_sel = i;
+        i++;
+    }
+}
+
+static void start_rename_prompt(Client *c, Session *s) {
+    if (!s->cur) return;
+    c->mode = 1;
+    c->prompt_kind = 1;
+    snprintf(c->prompt, sizeof c->prompt, "rename-window: %s", s->cur->name);
+    c->prompt_len = (int)strlen(c->prompt);
+    c->prompt_label_len = (int)strlen("rename-window: ");
+}
+
+static void start_confirm(Client *c, int action, const char *text) {
+    c->mode = 3;
+    c->confirm_action = action;
+    snprintf(c->prompt, sizeof c->prompt, "%s", text);
+    c->prompt_len = (int)strlen(c->prompt);
+    c->prompt_label_len = c->prompt_len;
+}
+
+static void apply_prompt(Client *c, Session *s) {
+    if (c->prompt_kind == 1) {
+        const char *name = c->prompt + c->prompt_label_len;
+        if (*name) rename_active_window(s, name);
+    } else if (c->prompt_kind == 2) {
+        int idx = atoi(c->prompt + c->prompt_label_len);
+        for (Window *w = s->windows; w; w = w->next) {
+            if (w->index == idx) {
+                select_window(s, w);
+                break;
+            }
+        }
+    }
+    c->mode = 0;
+}
+
+static void apply_confirm(Client *c, Session *s) {
+    int action = c->confirm_action;
+    c->mode = 0;
+    if (action == 1) {
+        kill_active_pane(s);
+    } else if (action == 2) {
+        s->running = 0;
+    } else if (action == 3) {
+        kill_active_window(s);
+    }
+}
+
+static void prefix_command(Client *c, Session *s, int key) {
+    switch (key) {
+    case 'a':
+        if (s->cur && s->cur->active) {
+            unsigned char b = PREFIX;
+            pane_write(s->cur->active, &b, 1);
+        }
+        break;
+    case 'c':
+    case 0x03:
+        new_window(s);
+        break;
+    case 'x':
+    case 0x18:
+        client_lock(c);
+        break;
+    case 0x04:
+    case 'd': {
+        char m[128];
+        snprintf(m, sizeof m, "[detached (from session %s)]", s->name);
+        client_detach(c, m);
+        break;
+    }
+    case '*': {
+        int n = 0;
+        for (Client *it = s->clients; it; it = it->next) if (it->attached) n++;
+        client_message(c, "%d client%s attached", n, n == 1 ? "" : "s");
+        break;
+    }
+    case 0x00:
+    case 0x0e:
+    case ' ':
+    case 'n':
+        next_window(s, 1);
+        break;
+    case 'A':
+        start_rename_prompt(c, s);
+        break;
+    case 0x01:
+        switch_last_window(s);
+        break;
+    case 0x10:
+    case 'p':
+    case 0x7f:
+        next_window(s, -1);
+        break;
+    case 0x17:
+    case 'w':
+        start_menu(c, s);
+        break;
+    case '\\':
+        start_confirm(c, 2, "kill-server? (y/n) ");
+        break;
+    case 'K':
+        start_confirm(c, 1, "kill-pane? (y/n) ");
+        break;
+    case '&':
+        start_confirm(c, 3, "kill-window? (y/n) ");
+        break;
+    case 'k':
+        select_pane_dir(s, 0, -1);
+        break;
+    case 'j':
+        select_pane_dir(s, 0, 1);
+        break;
+    case 'h':
+        select_pane_dir(s, -1, 0);
+        break;
+    case 'l':
+        select_pane_dir(s, 1, 0);
+        break;
+    case 0x0b:
+        resize_pane_dir(s, 0, -1, 5);
+        break;
+    case 0x0a:
+        resize_pane_dir(s, 0, 1, 5);
+        break;
+    case 0x08:
+        resize_pane_dir(s, -1, 0, 8);
+        break;
+    case 0x0c:
+        resize_pane_dir(s, 1, 0, 8);
+        break;
+    case 'r':
+        client_message(c, "Configuration Reloaded!");
+        break;
+    case '-':
+        split_pane(s, L_ROWS);
+        break;
+    case '|':
+    case '%':
+        split_pane(s, L_COLS);
+        break;
+    case '\t':
+        cycle_pane(s, 1);
+        break;
+    case K_BTAB:
+        cycle_pane(s, -1);
+        break;
+    case '"':
+        start_menu(c, s);
+        break;
+    case K_UP:
+        select_pane_dir(s, 0, -1);
+        break;
+    case K_DOWN:
+        select_pane_dir(s, 0, 1);
+        break;
+    case K_LEFT:
+        select_pane_dir(s, -1, 0);
+        break;
+    case K_RIGHT:
+        select_pane_dir(s, 1, 0);
+        break;
+    default:
+        if (key >= '0' && key <= '9') select_window_index(s, key - '0');
+        break;
+    }
+}
+
+/* returns bytes consumed, 0 = need more input */
+static int handle_prefix_key(Client *c, Session *s, const unsigned char *buf, size_t n) {
+    if (n == 0) return 0;
+    unsigned char b = buf[0];
+    int key = b;
+    int used = 1;
+    if (b == 0x1b) {
+        if (n < 2) {
+            key = 0;
+            used = 1;
+        } else if (buf[1] == '[' || buf[1] == 'O') {
+            if (n < 3) return 0;
+            switch (buf[2]) {
+            case 'A': key = K_UP; break;
+            case 'B': key = K_DOWN; break;
+            case 'C': key = K_RIGHT; break;
+            case 'D': key = K_LEFT; break;
+            case 'Z': key = K_BTAB; break;
+            default: key = 0; break;
+            }
+            used = 3;
+        } else {
+            key = 0;
+            used = 1;
+        }
+    }
+    c->prefix_pending = 0;
+    if (key) prefix_command(c, s, key);
+    return used;
+}
+
+static void prompt_key(Client *c, Session *s, const unsigned char *buf, size_t n, size_t *used) {
+    *used = 1;
+    unsigned char b = buf[0];
+    if (b == 0x1b) {
+        if (n < 2) {
+            c->mode = 0;
+            *used = 1;
+            return;
+        }
+        if ((buf[1] == '[' || buf[1] == 'O') && n < 3) {
+            *used = 0;
+            return;
+        }
+        c->mode = 0;
+        *used = (buf[1] == '[' || buf[1] == 'O') ? 3 : 1;
+        return;
+    }
+    if (b == '\r' || b == '\n') {
+        apply_prompt(c, s);
+        return;
+    }
+    if (b == 0x03) {
+        c->mode = 0;
+        return;
+    }
+    if (b == 0x7f || b == 0x08) {
+        if (c->prompt_len > c->prompt_label_len) c->prompt[--c->prompt_len] = '\0';
+        return;
+    }
+    if (b == 0x15) {
+        c->prompt_len = c->prompt_label_len;
+        c->prompt[c->prompt_len] = '\0';
+        return;
+    }
+    if (b >= 0x20 && c->prompt_len < (int)sizeof c->prompt - 2) {
+        c->prompt[c->prompt_len++] = (char)b;
+        c->prompt[c->prompt_len] = '\0';
+    }
+}
+
+static void confirm_key(Client *c, Session *s, unsigned char b) {
+    if (b == 'y' || b == 'Y' || b == '\r' || b == '\n') {
+        apply_confirm(c, s);
+    } else if (b == 'n' || b == 'N' || b == 0x1b || b == 0x03) {
+        c->mode = 0;
+    }
+}
+
+static void menu_key(Client *c, Session *s, const unsigned char *buf, size_t n, size_t *used) {
+    *used = 1;
+    unsigned char b = buf[0];
+    int count = 0;
+    for (Window *w = s->windows; w; w = w->next) count++;
+    if (count < 1) {
+        c->mode = 0;
+        return;
+    }
+
+    if (b == 0x1b) {
+        int key = 0;
+        if (b == 0x1b) {
+            if (n < 2) { *used = 0; return; }
+            if (buf[1] == '[' || buf[1] == 'O') {
+                if (n < 3) { *used = 0; return; }
+                if (buf[2] == 'A') key = K_UP;
+                else if (buf[2] == 'B') key = K_DOWN;
+                *used = 3;
+                if (!key) { c->mode = 0; return; }
+            } else {
+                c->mode = 0;
+                *used = 1;
+                return;
+            }
+        } else {
+            key = b;
+        }
+        if (key == K_UP) {
+            c->menu_sel--;
+            if (c->menu_sel < 0) c->menu_sel = count - 1;
+        } else {
+            c->menu_sel++;
+            if (c->menu_sel >= count) c->menu_sel = 0;
+        }
+        return;
+    }
+    if (b == 'k') { c->menu_sel = (c->menu_sel + count - 1) % count; return; }
+    if (b == 'j') { c->menu_sel = (c->menu_sel + 1) % count; return; }
+    if (b == 'q') { c->mode = 0; return; }
+    if (b == '\r' || b == '\n') {
+        int i = 0;
+        for (Window *w = s->windows; w; w = w->next) {
+            if (i == c->menu_sel) {
+                select_window(s, w);
+                break;
+            }
+            i++;
+        }
+        c->mode = 0;
+        return;
+    }
+}
+
+static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t n) {
+    if (n > sizeof c->in - c->inlen) n = sizeof c->in - c->inlen;
+    if (n == 0) return;
+    memcpy(c->in + c->inlen, buf, n);
+    c->inlen += n;
+
+    size_t i = 0;
+    while (i < c->inlen) {
+        unsigned char *p = c->in + i;
+        size_t left = c->inlen - i;
+        if (c->locked) {
+            if (p[0] == '\r' || p[0] == '\n') client_unlock(c);
+            i++;
+            continue;
+        }
+        if (c->dead) break;
+        if (c->mode == 1) {
+            size_t used = 0;
+            prompt_key(c, s, p, left, &used);
+            if (used == 0) break;
+            i += used;
+            continue;
+        }
+        if (c->mode == 2) {
+            size_t used = 0;
+            menu_key(c, s, p, left, &used);
+            if (used == 0) break;
+            i += used;
+            continue;
+        }
+        if (c->mode == 3) {
+            confirm_key(c, s, p[0]);
+            i++;
+            continue;
+        }
+        if (c->prefix_pending) {
+            int used = handle_prefix_key(c, s, p, left);
+            if (used == 0) break;
+            i += (size_t)used;
+            continue;
+        }
+        if (p[0] == PREFIX) {
+            c->prefix_pending = 1;
+            i++;
+            continue;
+        }
+        size_t j = i;
+        while (j < c->inlen && c->in[j] != PREFIX) j++;
+        if (s->cur && s->cur->active) pane_write(s->cur->active, c->in + i, j - i);
+        i = j;
+    }
+    if (i > 0) {
+        memmove(c->in, c->in + i, c->inlen - i);
+        c->inlen -= i;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* server                                                             */
+/* ------------------------------------------------------------------ */
+
+static Session *g_session;
+static volatile sig_atomic_t g_term;
+
+static void term_handler(int sig) {
+    (void)sig;
+    g_term = 1;
+}
+
+static int session_pane_count(Session *s) {
+    int n = 0;
+    for (Window *w = s->windows; w; w = w->next) n += layout_pane_count(w->root);
+    return n;
+}
+
+static void session_panes(Session *s, Pane **out, int max, int *n) {
+    *n = 0;
+    for (Window *w = s->windows; w; w = w->next) {
+        Pane *tmp[128];
+        int tn = 0;
+        layout_collect(w->root, tmp, &tn);
+        for (int i = 0; i < tn && *n < max; i++) out[(*n)++] = tmp[i];
+    }
+}
+
+static void unlink_window(Session *s, Window *w) {
+    Window *prev = NULL;
+    for (Window *it = s->windows; it; it = it->next) {
+        if (it == w) break;
+        prev = it;
+    }
+    Window *next = w->next;
+    if (prev) prev->next = next;
+    else s->windows = next;
+    s->nwin--;
+    if (s->cur == w) s->cur = next ? next : prev;
+    if (s->last == w) s->last = NULL;
+    window_free(w);
+    window_renumber(s->windows);
+}
+
+static void remove_pane_ptr(Session *s, Pane *p) {
+    for (Window *w = s->windows; w; w = w->next) {
+        Layout *leaf = layout_find_leaf(w->root, p);
+        if (!leaf) continue;
+        if (leaf == w->root) {
+            unlink_window(s, w);
+        } else {
+            Layout *par = leaf->parent;
+            Layout *sib = (par->a == leaf) ? par->b : par->a;
+            if (par->parent) {
+                if (par->parent->a == par) par->parent->a = sib;
+                else par->parent->b = sib;
+            } else {
+                w->root = sib;
+            }
+            sib->parent = par->parent;
+            free(leaf);
+            free(par);
+            pane_free(p);
+            w->active = layout_first_pane(w->root);
+            window_renumber(s->windows);
+        }
+        if (!s->windows) s->running = 0;
+        if (s->cur) session_layout(s);
+        invalidate_clients(s);
+        return;
+    }
+}
+
+static void client_remove(Session *s, Client *c) {
+    Client *prev = NULL;
+    for (Client *it = s->clients; it; it = it->next) {
+        if (it == c) break;
+        prev = it;
+    }
+    if (prev) prev->next = c->next;
+    else s->clients = c->next;
+    if (c->fd >= 0) close(c->fd);
+    if (c->prev_valid) grid_free(&c->prev);
+    free(c);
+    session_recalc_size(s);
+    invalidate_clients(s);
+}
+
+static Client *client_new(int fd) {
+    Client *c = xcalloc(1, sizeof *c);
+    c->fd = fd;
+    return c;
+}
+
+static void handle_message(Client *c, Session *s, uint32_t type, const unsigned char *data, uint32_t len) {
+    if (type == C_ATTACH) {
+        if (len >= 8) {
+            uint32_t cols, rows, flags = 0;
+            memcpy(&cols, data, 4);
+            memcpy(&rows, data + 4, 4);
+            if (len >= 12) memcpy(&flags, data + 8, 4);
+            if (cols < 1) cols = 1;
+            if (rows < 1) rows = 1;
+            if (cols > 1000) cols = 1000;
+            if (rows > 1000) rows = 1000;
+            c->cols = (int)cols;
+            c->rows = (int)rows;
+            c->truecolor = (flags & 1) != 0;
+            c->attached = 1;
+            session_recalc_size(s);
+            invalidate_clients(s);
+        }
+    } else if (type == C_RESIZE) {
+        if (len >= 8) {
+            uint32_t cols, rows;
+            memcpy(&cols, data, 4);
+            memcpy(&rows, data + 4, 4);
+            if (cols < 1) cols = 1;
+            if (rows < 1) rows = 1;
+            if (cols > 1000) cols = 1000;
+            if (rows > 1000) rows = 1000;
+            c->cols = (int)cols;
+            c->rows = (int)rows;
+            session_recalc_size(s);
+            invalidate_clients(s);
+        }
+    } else if (type == C_INPUT) {
+        client_feed(c, s, data, len);
+    }
+}
+
+static void client_read_socket(Client *c, Session *s) {
+    unsigned char tmp[16384];
+    ssize_t n = read(c->fd, tmp, sizeof tmp);
+    if (n <= 0) {
+        if (n < 0 && (errno == EINTR || errno == EAGAIN)) return;
+        c->dead = 1;
+        return;
+    }
+    if (c->netlen + (size_t)n > sizeof c->net) {
+        c->dead = 1;
+        return;
+    }
+    memcpy(c->net + c->netlen, tmp, (size_t)n);
+    c->netlen += (size_t)n;
+
+    size_t off = 0;
+    while (off + sizeof(MsgHdr) <= c->netlen) {
+        MsgHdr h;
+        memcpy(&h, c->net + off, sizeof h);
+        if (h.len > 1024 * 1024) { c->dead = 1; return; }
+        if (off + sizeof h + h.len > c->netlen) break;
+        handle_message(c, s, h.type, c->net + off + sizeof h, h.len);
+        off += sizeof h + h.len;
+    }
+    if (off > 0) {
+        memmove(c->net, c->net + off, c->netlen - off);
+        c->netlen -= off;
+    }
+}
+
+static void accept_client(Session *s) {
+    int fd = accept(s->listen_fd, NULL, NULL);
+    if (fd < 0) return;
+    Client *c = client_new(fd);
+    c->next = s->clients;
+    s->clients = c;
+}
+
+static void server_notify_all(Session *s, const char *msg) {
+    for (Client *c = s->clients; c; c = c->next) {
+        if (c->fd >= 0) send_msg(c->fd, S_DETACH, msg, (uint32_t)strlen(msg) + 1);
+    }
+}
+
+static void run_server(Session *s) {
+    int maxpanes = session_pane_count(s) + 64;
+    Pane **panes = xcalloc((size_t)maxpanes, sizeof(Pane *));
+    unsigned char rbuf[65536];
+    int dirty = 1;
+
+    while (s->running && !g_term) {
+        int need = session_pane_count(s);
+        if (need + 8 > maxpanes) {
+            maxpanes = need + 64;
+            panes = xrealloc(panes, (size_t)maxpanes * sizeof(Pane *));
+        }
+        int np = 0;
+        session_panes(s, panes, maxpanes, &np);
+
+        /* reap shells; a background child may hold the pty open */
+        int reaped = 0;
+        for (;;) {
+            int st;
+            pid_t r = waitpid(-1, &st, WNOHANG);
+            if (r <= 0) break;
+            for (int i = 0; i < np; i++) {
+                Pane *p = panes[i];
+                if (p->pid != r) continue;
+                p->pid = -1;
+                for (;;) {
+                    ssize_t n = read(p->fd, rbuf, sizeof rbuf);
+                    if (n > 0) em_feed(p, rbuf, (size_t)n);
+                    else break;
+                }
+                p->alive = 0;
+                reaped = 1;
+                break;
+            }
+        }
+        if (reaped) {
+            for (int i = 0; i < np; i++) {
+                if (!panes[i]->alive) remove_pane_ptr(s, panes[i]);
+            }
+            dirty = 1;
+            continue;
+        }
+
+        int nclients = 0;
+        for (Client *c = s->clients; c; c = c->next) nclients++;
+        int nfds = 1 + nclients + np;
+        struct pollfd *pfds = xcalloc((size_t)nfds, sizeof(struct pollfd));
+        Client **cmap = xcalloc((size_t)nclients + 1, sizeof(Client *));
+        int idx = 0;
+        pfds[idx].fd = s->listen_fd;
+        pfds[idx].events = POLLIN;
+        idx++;
+        int client_poll_count = 0;
+        for (Client *c = s->clients; c; c = c->next) {
+            if (c->fd >= 0) {
+                pfds[idx].fd = c->fd;
+                pfds[idx].events = POLLIN;
+                cmap[client_poll_count] = c;
+                client_poll_count++;
+                idx++;
+            }
+        }
+        for (int i = 0; i < np; i++) {
+            pfds[idx].fd = panes[i]->fd;
+            pfds[idx].events = POLLIN;
+            idx++;
+        }
+
+        int timeout = 200;
+        int pr = poll(pfds, (nfds_t)idx, timeout);
+        if (pr < 0 && errno != EINTR) break;
+
+        if (pr > 0 && (pfds[0].revents & POLLIN)) {
+            accept_client(s);
+            dirty = 1;
+        }
+        for (int i = 0; i < client_poll_count; i++) {
+            if (pfds[1 + i].revents & (POLLIN | POLLHUP | POLLERR)) {
+                client_read_socket(cmap[i], s);
+                dirty = 1;
+            }
+        }
+        for (int i = 0; i < np; i++) {
+            struct pollfd *pf = &pfds[1 + client_poll_count + i];
+            if (!(pf->revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            for (;;) {
+                ssize_t n = read(pf->fd, rbuf, sizeof rbuf);
+                if (n > 0) {
+                    em_feed(panes[i], rbuf, (size_t)n);
+                    dirty = 1;
+                    if ((size_t)n < sizeof rbuf) break;
+                } else if (n < 0 && (errno == EINTR)) {
+                    continue;
+                } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    break;
+                } else {
+                    panes[i]->alive = 0;
+                    break;
+                }
+            }
+            if (!panes[i]->alive) {
+                Pane *dead = panes[i];
+                dirty = 1;
+                remove_pane_ptr(s, dead);
+                break;
+            }
+        }
+
+        free(pfds);
+        free(cmap);
+
+        long long t = now_ms();
+        if (t - s->last_status >= STATUS_INTERVAL * 1000) {
+            s->last_status = t;
+            dirty = 1;
+        }
+
+        if (dirty) {
+            for (Client *c = s->clients; c; c = c->next) {
+                if (!c->attached || c->dead || c->locked || c->fd < 0) continue;
+                Grid scr;
+                compose(s, c, &scr);
+                draw_frame(s, c, &scr);
+                grid_free(&scr);
+            }
+            dirty = 0;
+        }
+
+        Client *c = s->clients;
+        while (c) {
+            Client *next = c->next;
+            if (c->dead) client_remove(s, c);
+            c = next;
+        }
+    }
+
+    server_notify_all(s, "[server exited]");
+    free(panes);
+}
+
+static void server_cleanup(Session *s) {
+    Client *c = s->clients;
+    while (c) {
+        Client *next = c->next;
+        if (c->fd >= 0) close(c->fd);
+        if (c->prev_valid) grid_free(&c->prev);
+        free(c);
+        c = next;
+    }
+    s->clients = NULL;
+    Window *w = s->windows;
+    while (w) {
+        Window *next = w->next;
+        window_free(w);
+        w = next;
+    }
+    s->windows = NULL;
+    if (s->listen_fd >= 0) close(s->listen_fd);
+    unlink(s->sock_path);
+}
+
+static void server_start(const char *path, const char *name, int readyfd) {
+    signal(SIGPIPE, SIG_IGN);
+    signal(SIGHUP, SIG_IGN);
+    signal(SIGCHLD, SIG_DFL);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = term_handler;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGQUIT, &sa, NULL);
+
+    umask(077);
+
+    int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (lfd < 0) {
+        if (readyfd >= 0) close(readyfd);
+        _exit(1);
+    }
+    struct sockaddr_un saun;
+    memset(&saun, 0, sizeof saun);
+    saun.sun_family = AF_UNIX;
+    snprintf(saun.sun_path, sizeof saun.sun_path, "%s", path);
+    unlink(path);
+    if (bind(lfd, (struct sockaddr *)&saun, sizeof saun) < 0 ||
+        listen(lfd, 16) < 0) {
+        close(lfd);
+        if (readyfd >= 0) close(readyfd);
+        _exit(1);
+    }
+    chmod(path, 0600);
+
+    Session *s = xcalloc(1, sizeof *s);
+    snprintf(s->name, sizeof s->name, "%s", name);
+    snprintf(s->sock_path, sizeof s->sock_path, "%s", path);
+    if (!getcwd(s->cwd, sizeof s->cwd)) snprintf(s->cwd, sizeof s->cwd, "/");
+    s->listen_fd = lfd;
+    s->w = 80;
+    s->h = 24;
+    s->running = 1;
+    s->last_status = now_ms();
+    g_session = s;
+
+    Window *w = window_new(s, NULL);
+    if (!w) {
+        server_cleanup(s);
+        if (readyfd >= 0) close(readyfd);
+        _exit(1);
+    }
+    s->cur = w;
+    session_layout(s);
+
+    if (readyfd >= 0) {
+        char ok = '1';
+        write_all(readyfd, &ok, 1);
+        close(readyfd);
+    }
+
+    run_server(s);
+    server_cleanup(s);
+    free(s);
+    _exit(0);
+}
+
+/* ------------------------------------------------------------------ */
+/* client                                                             */
+/* ------------------------------------------------------------------ */
+
+static volatile sig_atomic_t g_winch;
+static volatile sig_atomic_t g_client_quit;
+/* Self-pipe used to wake the client's poll() from the SIGWINCH handler. The
+ * handler can arrive in the small window between checking g_winch and entering
+ * poll(), which would otherwise leave the resize pending until the next key or
+ * pane output. Writing a byte makes that race harmless. */
+static int g_winch_pipe[2] = { -1, -1 };
+
+static void winch_handler(int sig) {
+    (void)sig;
+    int saved = errno;
+    g_winch = 1;
+    if (g_winch_pipe[1] >= 0) {
+        char b = 1;
+        ssize_t r = write(g_winch_pipe[1], &b, 1);
+        (void)r;
+    }
+    errno = saved;
+}
+
+static void client_quit_handler(int sig) {
+    (void)sig;
+    g_client_quit = 1;
+}
+
+static int connect_session(const char *path) {
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    snprintf(sa.sun_path, sizeof sa.sun_path, "%s", path);
+    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static int ensure_socket_dir(void) {
+    char dir[PATH_MAX];
+    socket_dir(dir, sizeof dir);
+    if (mkdir(dir, 0700) < 0 && errno != EEXIST) return -1;
+    chmod(dir, 0700);
+    char alt[PATH_MAX];
+    snprintf(alt, sizeof alt, "/tmp/moerx-%u", (unsigned)getuid());
+    if (strcmp(alt, dir) != 0) {
+        if (mkdir(alt, 0700) == 0) chmod(alt, 0700);
+    }
+    return 0;
+}
+
+static int spawn_server(const char *path, const char *name) {
+    if (ensure_socket_dir() < 0) return -1;
+    char dir[PATH_MAX], lockpath[PATH_MAX + 64];
+    socket_dir(dir, sizeof dir);
+    snprintf(lockpath, sizeof lockpath, "%s/.spawn-%s.lock", dir, name);
+    int lock = open(lockpath, O_CREAT | O_RDWR, 0600);
+    if (lock < 0) return -1;
+    if (flock(lock, LOCK_EX) < 0) {
+        close(lock);
+        return -1;
+    }
+
+    int fd = connect_session(path);
+    if (fd >= 0) {
+        flock(lock, LOCK_UN);
+        close(lock);
+        return fd;
+    }
+
+    int p[2];
+    if (pipe(p) < 0) {
+        flock(lock, LOCK_UN);
+        close(lock);
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(p[0]);
+        close(p[1]);
+        flock(lock, LOCK_UN);
+        close(lock);
+        return -1;
+    }
+    if (pid == 0) {
+        close(p[0]);
+        setsid();
+        pid_t pid2 = fork();
+        if (pid2 < 0) _exit(1);
+        if (pid2 > 0) _exit(0);
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) {
+            dup2(dn, 0);
+            dup2(dn, 1);
+            dup2(dn, 2);
+            if (dn > 2) close(dn);
+        }
+        close(lock);
+        server_start(path, name, p[1]);
+        _exit(1);
+    }
+    close(p[1]);
+    char ok = 0;
+    ssize_t got;
+    do {
+        got = read(p[0], &ok, 1);
+    } while (got < 0 && errno == EINTR);
+    close(p[0]);
+    waitpid(pid, NULL, 0);
+    flock(lock, LOCK_UN);
+    close(lock);
+
+    if (got != 1 || ok != '1') {
+        errno = EIO;
+        return -1;
+    }
+    for (int i = 0; i < 300; i++) {
+        fd = connect_session(path);
+        if (fd >= 0) return fd;
+        usleep(10000);
+    }
+    return -1;
+}
+
+static void tty_size(int *cols, int *rows) {
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col && ws.ws_row) {
+        *cols = ws.ws_col;
+        *rows = ws.ws_row;
+    } else {
+        *cols = 80;
+        *rows = 24;
+    }
+}
+
+static int tty_raw(struct termios *saved) {
+    if (tcgetattr(STDIN_FILENO, saved) < 0) return -1;
+    struct termios raw = *saved;
+    cfmakeraw(&raw);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) < 0) return -1;
+    return 0;
+}
+
+static void tty_restore(struct termios *saved) {
+    const char *seq = "\x1b[0m\x1b[?25h\x1b[?1049l";
+    write_all(STDOUT_FILENO, seq, strlen(seq));
+    tcsetattr(STDIN_FILENO, TCSAFLUSH, saved);
+}
+
+typedef struct {
+    unsigned char *p;
+    size_t len, cap;
+} NetBuf;
+
+static void net_append(NetBuf *nb, const unsigned char *data, size_t n) {
+    if (nb->len + n > nb->cap) {
+        size_t cap = nb->cap ? nb->cap : 65536;
+        while (cap < nb->len + n) cap *= 2;
+        nb->p = xrealloc(nb->p, cap);
+        nb->cap = cap;
+    }
+    memcpy(nb->p + nb->len, data, n);
+    nb->len += n;
+}
+
+static void net_consume(NetBuf *nb, size_t n) {
+    if (n >= nb->len) {
+        nb->len = 0;
+        return;
+    }
+    memmove(nb->p, nb->p + n, nb->len - n);
+    nb->len -= n;
+}
+
+static int terminal_truecolor(void) {
+    const char *ct = getenv("COLORTERM");
+    const char *term = getenv("TERM");
+    if (!ct || (strcmp(ct, "truecolor") != 0 && strcmp(ct, "24bit") != 0)) return 0;
+    /* screen/tmux/linux often advertise COLORTERM without passing RGB
+       through; prefer 256 colours there so backgrounds are not dropped. */
+    if (term && (!strncmp(term, "screen", 6) || !strncmp(term, "tmux", 4) ||
+                 !strncmp(term, "linux", 5) || !strncmp(term, "dumb", 4))) {
+        return 0;
+    }
+    return 1;
+}
+
+static int run_client(int fd, const char *name) {
+    struct termios saved;
+    if (tty_raw(&saved) < 0) {
+        fprintf(stderr, "moerx: not a terminal\n");
+        return 1;
+    }
+
+    /* Wake poll() for SIGWINCH without relying on the signal landing while it
+       is blocked. Failure is fine: the g_winch check still works, just with
+       the old race. */
+    if (pipe(g_winch_pipe) == 0) {
+        fcntl(g_winch_pipe[0], F_SETFL, fcntl(g_winch_pipe[0], F_GETFL, 0) | O_NONBLOCK);
+        fcntl(g_winch_pipe[1], F_SETFL, fcntl(g_winch_pipe[1], F_GETFL, 0) | O_NONBLOCK);
+    } else {
+        g_winch_pipe[0] = g_winch_pipe[1] = -1;
+    }
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = winch_handler;
+    sigaction(SIGWINCH, &sa, NULL);
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = client_quit_handler;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    signal(SIGPIPE, SIG_IGN);
+
+    {
+        const char *seq = "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H";
+        write_all(STDOUT_FILENO, seq, strlen(seq));
+    }
+
+    int cols, rows;
+    tty_size(&cols, &rows);
+    uint32_t attach[3] = { (uint32_t)cols, (uint32_t)rows,
+                           (uint32_t)terminal_truecolor() };
+    if (send_msg(fd, C_ATTACH, attach, sizeof attach) < 0) {
+        if (g_winch_pipe[0] >= 0) close(g_winch_pipe[0]);
+        if (g_winch_pipe[1] >= 0) close(g_winch_pipe[1]);
+        g_winch_pipe[0] = g_winch_pipe[1] = -1;
+        tty_restore(&saved);
+        fprintf(stderr, "moerx: cannot attach\n");
+        return 1;
+    }
+
+    NetBuf nb;
+    memset(&nb, 0, sizeof nb);
+    char exitmsg[256];
+    exitmsg[0] = '\0';
+    int done = 0;
+
+    while (!done) {
+        /* Drain the self-pipe before blocking. A SIGWINCH that arrived while
+           the previous iteration was working has left a byte in the pipe, so
+           the resize is applied now instead of waiting for more activity. */
+        if (g_winch_pipe[0] >= 0) {
+            char junk[64];
+            while (read(g_winch_pipe[0], junk, sizeof junk) > 0) g_winch = 1;
+        }
+        if (g_winch) {
+            g_winch = 0;
+            tty_size(&cols, &rows);
+            uint32_t sz[2] = { (uint32_t)cols, (uint32_t)rows };
+            send_msg(fd, C_RESIZE, sz, sizeof sz);
+        }
+
+        struct pollfd pfds[3];
+        pfds[0].fd = STDIN_FILENO;
+        pfds[0].events = POLLIN;
+        pfds[1].fd = fd;
+        pfds[1].events = POLLIN;
+        int nfds = 2;
+        if (g_winch_pipe[0] >= 0) {
+            pfds[2].fd = g_winch_pipe[0];
+            pfds[2].events = POLLIN;
+            nfds = 3;
+        }
+        int pr = poll(pfds, (nfds_t)nfds, -1);
+        if (pr < 0) {
+            if (errno == EINTR) {
+                if (g_client_quit) break;
+                continue;
+            } else {
+                break;
+            }
+        }
+        /* The resize itself is handled at the top of the loop. */
+        if (nfds == 3 && (pfds[2].revents & POLLIN)) continue;
+
+        if (pr > 0 && (pfds[0].revents & (POLLIN | POLLHUP))) {
+            unsigned char buf[4096];
+            ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
+            if (n > 0) {
+                if (send_msg(fd, C_INPUT, buf, (uint32_t)n) < 0) break;
+            } else if (n == 0) {
+                break;
+            }
+        }
+
+        if (pr > 0 && (pfds[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+            unsigned char buf[16384];
+            ssize_t n = read(fd, buf, sizeof buf);
+            if (n <= 0) {
+                if (n < 0 && errno == EINTR) continue;
+                break;
+            }
+            net_append(&nb, buf, (size_t)n);
+            size_t off = 0;
+            while (off + sizeof(MsgHdr) <= nb.len) {
+                MsgHdr h;
+                memcpy(&h, nb.p + off, sizeof h);
+                if (h.len > 8 * 1024 * 1024) { done = 1; break; }
+                if (off + sizeof h + h.len > nb.len) break;
+                unsigned char *payload = nb.p + off + sizeof h;
+                if (h.type == S_DRAW) {
+                    write_all(STDOUT_FILENO, payload, h.len);
+                } else if (h.type == S_DETACH) {
+                    size_t m = h.len;
+                    if (m >= sizeof exitmsg) m = sizeof exitmsg - 1;
+                    if (m) memcpy(exitmsg, payload, m);
+                    exitmsg[m] = '\0';
+                    done = 1;
+                }
+                off += sizeof h + h.len;
+            }
+            if (off) net_consume(&nb, off);
+        }
+    }
+
+    free(nb.p);
+    if (g_winch_pipe[0] >= 0) close(g_winch_pipe[0]);
+    if (g_winch_pipe[1] >= 0) close(g_winch_pipe[1]);
+    g_winch_pipe[0] = g_winch_pipe[1] = -1;
+    close(fd);
+    tty_restore(&saved);
+    if (exitmsg[0]) printf("%s\n", exitmsg);
+    else printf("[detached (from session %s)]\n", name);
+    return 0;
+}
+
+static void print_help(FILE *out) {
+    fprintf(out,
+        "usage: moerx [session]\n"
+        "       moerx -h | --help\n"
+        "\n"
+        "Attach to a running session, or start it if it is not running.\n"
+        "The session name defaults to \"0\".\n"
+        "\n"
+        "Every shortcut starts with the Ctrl-A prefix: press Ctrl-A, release it,\n"
+        "then press the key shown. Ctrl-B is not a prefix and is sent to the pane.\n"
+        "\n"
+        "Windows\n"
+        "  Ctrl-A c              new window\n"
+        "  Ctrl-A Ctrl-C         new window\n"
+        "  Ctrl-A n              next window\n"
+        "  Ctrl-A Space          next window\n"
+        "  Ctrl-A Ctrl-N         next window\n"
+        "  Ctrl-A Ctrl-@         next window\n"
+        "  Ctrl-A p              previous window\n"
+        "  Ctrl-A Backspace      previous window\n"
+        "  Ctrl-A Ctrl-P         previous window\n"
+        "  Ctrl-A Ctrl-A         last window\n"
+        "  Ctrl-A w              window menu\n"
+        "  Ctrl-A Ctrl-W         window menu\n"
+        "  Ctrl-A \"              window menu\n"
+        "  Ctrl-A A              rename window\n"
+        "  Ctrl-A 0 .. Ctrl-A 9  select window by number\n"
+        "  Ctrl-A &              kill window (confirm)\n"
+        "\n"
+        "Panes\n"
+        "  Ctrl-A |              split left/right\n"
+        "  Ctrl-A %%              split left/right\n"
+        "  Ctrl-A -              split top/bottom\n"
+        "  Ctrl-A h              select pane left\n"
+        "  Ctrl-A j              select pane down\n"
+        "  Ctrl-A k              select pane up\n"
+        "  Ctrl-A l              select pane right\n"
+        "  Ctrl-A arrow keys     select pane\n"
+        "  Ctrl-A Tab            next pane\n"
+        "  Ctrl-A Shift-Tab      previous pane\n"
+        "  Ctrl-A o              next pane\n"
+        "  Ctrl-A Ctrl-H         resize pane left\n"
+        "  Ctrl-A Ctrl-J         resize pane down\n"
+        "  Ctrl-A Ctrl-K         resize pane up\n"
+        "  Ctrl-A Ctrl-L         resize pane right\n"
+        "  Ctrl-A K              kill pane (confirm)\n"
+        "\n"
+        "Client and server\n"
+        "  Ctrl-A a              send a literal Ctrl-A to the pane\n"
+        "  Ctrl-A x              lock the client\n"
+        "  Ctrl-A Ctrl-X         lock the client\n"
+        "  Ctrl-A *              list attached clients\n"
+        "  Ctrl-A r              show \"Configuration Reloaded!\"\n"
+        "  Ctrl-A d              detach\n"
+        "  Ctrl-A Ctrl-D         detach\n"
+        "  Ctrl-A \\              kill server (confirm)\n"
+        "\n"
+        "Inside menus use Up/Down or j/k and Enter; q or Escape closes.\n"
+        "Inside prompts use Enter to accept, Escape to cancel, Ctrl-U to clear.\n");
+}
+
+int main(int argc, char **argv) {
+    setlocale(LC_CTYPE, "");
+
+    int argi = 1;
+    if (argc > 1 && strcmp(argv[1], "--") == 0) {
+        argi = 2;
+    } else if (argc > 1 && (strcmp(argv[1], "-h") == 0 ||
+                            strcmp(argv[1], "--help") == 0)) {
+        print_help(stdout);
+        return 0;
+    } else if (argc > 1 && argv[1][0] == '-' && argv[1][1] != '\0') {
+        fprintf(stderr, "moerx: unknown option '%s'\n", argv[1]);
+        fprintf(stderr, "Try 'moerx --help' for more information.\n");
+        return 2;
+    }
+
+    if (argc - argi > 1) {
+        fprintf(stderr, "moerx: too many arguments\n");
+        fprintf(stderr, "Try 'moerx --help' for more information.\n");
+        return 2;
+    }
+    const char *name = argc - argi > 0 ? argv[argi] : "0";
+    if (!valid_session_name(name)) {
+        fprintf(stderr, "moerx: bad session name '%s'\n", name);
+        fprintf(stderr, "Try 'moerx --help' for more information.\n");
+        return 2;
+    }
+
+    char path[PATH_MAX];
+    make_socket_path(name, path, sizeof path);
+
+    int fd = connect_session(path);
+    if (fd < 0) fd = spawn_server(path, name);
+    if (fd < 0) {
+        fprintf(stderr, "moerx: cannot start or attach session '%s': %s\n",
+                name, strerror(errno));
+        return 1;
+    }
+    return run_client(fd, name);
+}
+
