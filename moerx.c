@@ -1,6 +1,18 @@
 /* Feature macros must come before any system header. */
+#if defined(__FreeBSD__) || defined(__DragonFly__) || defined(__NetBSD__) || \
+    defined(__OpenBSD__)
+/*
+ * The BSDs expose flock(), usleep(), cfmakeraw() and SIGWINCH only when
+ * __BSD_VISIBLE is set, which defining _XOPEN_SOURCE would disable.  Their
+ * default environment already includes everything we use.
+ */
+#else
 #ifndef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700
+#endif
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
 #endif
 #ifndef _DARWIN_C_SOURCE
 #define _DARWIN_C_SOURCE
@@ -14,7 +26,7 @@
  *   moerx [session]     attach to session (default "0"), or start it
  *   moerx -h|--help     show usage and all Ctrl-A shortcut chains
  *
- * Pure C99 + POSIX (macOS / Linux).
+ * Pure C99 + POSIX (macOS / Linux / FreeBSD).
  */
 
 #include <ctype.h>
@@ -87,6 +99,7 @@ static int send_msg(int fd, uint32_t type, const void *data, uint32_t len);
 #define MIN_ROWS 5
 #define MSG_TIME 3000
 #define STATUS_INTERVAL 2
+#define SIZE_CHECK_MS 250
 
 /* ------------------------------------------------------------------ */
 /* small helpers                                                      */
@@ -2201,6 +2214,14 @@ static int rect_overlap(int a0, int a1, int b0, int b1) {
     return e - s;
 }
 
+/* Gap between two intervals: 0 when they overlap, otherwise the distance
+ * between the closest edges. */
+static int rect_gap(int a0, int a1, int b0, int b1) {
+    if (b0 >= a1) return b0 - a1;
+    if (b1 <= a0) return a0 - b1;
+    return 0;
+}
+
 static void select_pane_dir(Session *s, int dx, int dy) {
     Window *w = s->cur;
     if (!w || !w->active) return;
@@ -2208,33 +2229,80 @@ static void select_pane_dir(Session *s, int dx, int dy) {
     Pane *list[128];
     int n = 0;
     layout_collect(w->root, list, &n);
+
     Pane *best = NULL;
-    long bestscore = 0;
+    long best_primary = 0, best_gap = 0, best_center = 0;
+    int best_overlap = 0;
+
     for (int i = 0; i < n; i++) {
         Pane *p = list[i];
         if (p == a) continue;
-        int acx = a->x * 2 + a->w;
-        int acy = a->y * 2 + a->h;
-        int pcx = p->x * 2 + p->w;
-        int pcy = p->y * 2 + p->h;
-        int ddx = pcx - acx;
-        int ddy = pcy - acy;
-        int ok = 0;
-        if (dx < 0) ok = ddx < 0;
-        else if (dx > 0) ok = ddx > 0;
-        else if (dy < 0) ok = ddy < 0;
-        else if (dy > 0) ok = ddy > 0;
-        if (!ok) continue;
-        int overlap = (dx != 0)
-            ? rect_overlap(a->y, a->y + a->h, p->y, p->y + p->h)
-            : rect_overlap(a->x, a->x + a->w, p->x, p->x + p->w);
-        long d = (dx != 0) ? labs((long)ddx) : labs((long)ddy);
-        long score = d * 1000 - overlap;
-        if (!best || score < bestscore) {
+
+        int primary, gap, overlap, ac, pc;
+
+        /* Only panes strictly beyond the active pane's edge in the wanted
+         * direction are candidates. Comparing centres is not enough: a
+         * tall pane beside us extends further down and would look like it
+         * is "below", while a wide pane beside us would look like it is
+         * "right". */
+        if (dx > 0) {
+            if (p->x < a->x + a->w) continue;
+            primary = p->x - (a->x + a->w);
+            gap = rect_gap(a->y, a->y + a->h, p->y, p->y + p->h);
+            overlap = rect_overlap(a->y, a->y + a->h, p->y, p->y + p->h);
+            ac = a->y * 2 + a->h;
+            pc = p->y * 2 + p->h;
+        } else if (dx < 0) {
+            if (p->x + p->w > a->x) continue;
+            primary = a->x - (p->x + p->w);
+            gap = rect_gap(a->y, a->y + a->h, p->y, p->y + p->h);
+            overlap = rect_overlap(a->y, a->y + a->h, p->y, p->y + p->h);
+            ac = a->y * 2 + a->h;
+            pc = p->y * 2 + p->h;
+        } else if (dy > 0) {
+            if (p->y < a->y + a->h) continue;
+            primary = p->y - (a->y + a->h);
+            gap = rect_gap(a->x, a->x + a->w, p->x, p->x + p->w);
+            overlap = rect_overlap(a->x, a->x + a->w, p->x, p->x + p->w);
+            ac = a->x * 2 + a->w;
+            pc = p->x * 2 + p->w;
+        } else if (dy < 0) {
+            if (p->y + p->h > a->y) continue;
+            primary = a->y - (p->y + p->h);
+            gap = rect_gap(a->x, a->x + a->w, p->x, p->x + p->w);
+            overlap = rect_overlap(a->x, a->x + a->w, p->x, p->x + p->w);
+            ac = a->x * 2 + a->w;
+            pc = p->x * 2 + p->w;
+        } else {
+            continue;
+        }
+
+        /* Prefer panes that overlap the active pane on the perpendicular
+         * axis, then the closest edge in the wanted direction, then the
+         * smallest perpendicular gap and the best centre alignment. */
+        int aligned = overlap > 0;
+        long center = labs((long)ac - (long)pc);
+        int better;
+        if (!best) {
+            better = 1;
+        } else if (aligned != best_overlap) {
+            better = aligned > best_overlap;
+        } else if (primary != best_primary) {
+            better = primary < best_primary;
+        } else if (gap != best_gap) {
+            better = gap < best_gap;
+        } else {
+            better = center < best_center;
+        }
+        if (better) {
             best = p;
-            bestscore = score;
+            best_overlap = aligned;
+            best_primary = primary;
+            best_gap = gap;
+            best_center = center;
         }
     }
+
     if (best) {
         w->active = best;
         invalidate_clients(s);
@@ -3032,6 +3100,21 @@ static void server_cleanup(Session *s) {
     unlink(s->sock_path);
 }
 
+static char g_spawn_err[200];
+
+/* Tell the spawning client why the server could not come up. */
+static void server_fail(int readyfd, const char *stage, int err) {
+    if (readyfd < 0) return;
+    char buf[200];
+    int n = snprintf(buf, sizeof buf, "%s: %s", stage, strerror(err));
+    if (n > 0) {
+        if ((size_t)n >= sizeof buf) n = (int)sizeof buf - 1;
+        ssize_t w = write(readyfd, buf, (size_t)n);
+        (void)w;
+    }
+    close(readyfd);
+}
+
 static void server_start(const char *path, const char *name, int readyfd) {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
@@ -3047,7 +3130,7 @@ static void server_start(const char *path, const char *name, int readyfd) {
 
     int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (lfd < 0) {
-        if (readyfd >= 0) close(readyfd);
+        server_fail(readyfd, "socket", errno);
         _exit(1);
     }
     struct sockaddr_un saun;
@@ -3055,10 +3138,16 @@ static void server_start(const char *path, const char *name, int readyfd) {
     saun.sun_family = AF_UNIX;
     snprintf(saun.sun_path, sizeof saun.sun_path, "%s", path);
     unlink(path);
-    if (bind(lfd, (struct sockaddr *)&saun, sizeof saun) < 0 ||
-        listen(lfd, 16) < 0) {
+    if (bind(lfd, (struct sockaddr *)&saun, sizeof saun) < 0) {
+        int err = errno;
         close(lfd);
-        if (readyfd >= 0) close(readyfd);
+        server_fail(readyfd, "bind", err);
+        _exit(1);
+    }
+    if (listen(lfd, 16) < 0) {
+        int err = errno;
+        close(lfd);
+        server_fail(readyfd, "listen", err);
         _exit(1);
     }
     chmod(path, 0600);
@@ -3328,11 +3417,21 @@ static int run_client(int fd, const char *name) {
     uint32_t attach[3] = { (uint32_t)cols, (uint32_t)rows,
                            (uint32_t)terminal_truecolor() };
     if (send_msg(fd, C_ATTACH, attach, sizeof attach) < 0) {
+        /* errno is the only clue: the server accepted the connection but the
+           attach write failed, usually because it closed the socket while
+           shutting down. Save it before close()/tcsetattr() clobber it. */
+        int err = errno;
         if (g_winch_pipe[0] >= 0) close(g_winch_pipe[0]);
         if (g_winch_pipe[1] >= 0) close(g_winch_pipe[1]);
         g_winch_pipe[0] = g_winch_pipe[1] = -1;
         tty_restore(&saved);
-        fprintf(stderr, "moerx: cannot attach\n");
+        if (err == EPIPE || err == ECONNRESET) {
+            fprintf(stderr, "moerx: cannot attach to session '%s': server closed "
+                            "the connection (%s)\n", name, strerror(err));
+        } else {
+            fprintf(stderr, "moerx: cannot attach to session '%s': %s\n",
+                    name, strerror(err));
+        }
         return 1;
     }
 
@@ -3341,6 +3440,7 @@ static int run_client(int fd, const char *name) {
     char exitmsg[256];
     exitmsg[0] = '\0';
     int done = 0;
+    long long last_size_check = now_ms();
 
     while (!done) {
         /* Drain the self-pipe before blocking. A SIGWINCH that arrived while
@@ -3350,11 +3450,23 @@ static int run_client(int fd, const char *name) {
             char junk[64];
             while (read(g_winch_pipe[0], junk, sizeof junk) > 0) g_winch = 1;
         }
-        if (g_winch) {
+
+        /* Do not rely on SIGWINCH alone: some terminals have been seen to
+           update the pty size without delivering a signal, or to deliver it
+           before the size is visible. Reconcile against TIOCGWINSZ
+           periodically so a missed event cannot leave us at the old size. */
+        long long t = now_ms();
+        if (g_winch || t - last_size_check >= SIZE_CHECK_MS) {
             g_winch = 0;
-            tty_size(&cols, &rows);
-            uint32_t sz[2] = { (uint32_t)cols, (uint32_t)rows };
-            send_msg(fd, C_RESIZE, sz, sizeof sz);
+            last_size_check = t;
+            int ncols, nrows;
+            tty_size(&ncols, &nrows);
+            if (ncols != cols || nrows != rows) {
+                cols = ncols;
+                rows = nrows;
+                uint32_t sz[2] = { (uint32_t)cols, (uint32_t)rows };
+                if (send_msg(fd, C_RESIZE, sz, sizeof sz) < 0) break;
+            }
         }
 
         struct pollfd pfds[3];
@@ -3368,7 +3480,7 @@ static int run_client(int fd, const char *name) {
             pfds[2].events = POLLIN;
             nfds = 3;
         }
-        int pr = poll(pfds, (nfds_t)nfds, -1);
+        int pr = poll(pfds, (nfds_t)nfds, SIZE_CHECK_MS);
         if (pr < 0) {
             if (errno == EINTR) {
                 if (g_client_quit) break;

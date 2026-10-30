@@ -107,4 +107,4 @@ This is "very basic" by design:
 ## Build notes
 
 Requires a C99 compiler and POSIX. Tested on macOS with clang; the code also
-builds with gcc on Linux.
+builds with gcc on Linux and with clang on FreeBSD.
