@@ -1008,6 +1008,7 @@ struct Client {
     int fd;
     int cols, rows;
     int attached;
+    uint64_t order;        /* attach/resize sequence, newest client wins */
     int truecolor;
     unsigned char in[16384];
     size_t inlen;
@@ -1050,7 +1051,9 @@ struct Session {
     int nwin;
 
     Client *clients;
+    uint64_t client_order;
     int running;
+    int redraw;            /* a removed client changed the session size */
 
     long long last_status;
 };
@@ -1898,9 +1901,14 @@ static void draw_frame(Session *s, Client *c, Grid *scr) {
     Buf b;
     memset(&b, 0, sizeof b);
 
-    /* A client larger than the session gets the screen centred. */
+    /* A client larger than the session gets the screen centred, while a
+       smaller client sees the top-left part of the session. */
     int offx = c->cols > scr->w ? (c->cols - scr->w) / 2 : 0;
     int offy = c->rows > scr->h ? (c->rows - scr->h) / 2 : 0;
+    int vw = scr->w < c->cols ? scr->w : c->cols;
+    int vh = scr->h < c->rows ? scr->h : c->rows;
+    if (vw < 1) vw = 1;
+    if (vh < 1) vh = 1;
 
     int invalid = !c->prev_valid || c->prev.w != scr->w || c->prev.h != scr->h;
     if (invalid) {
@@ -1921,9 +1929,9 @@ static void draw_frame(Session *s, Client *c, Grid *scr) {
         }
     }
 
-    for (int y = 0; y < scr->h; y++) {
+    for (int y = 0; y < vh; y++) {
         int first = -1, last = -1;
-        for (int x = 0; x < scr->w; x++) {
+        for (int x = 0; x < vw; x++) {
             Cell *a = grid_at(scr, x, y);
             Cell *p = grid_at(&c->prev, x, y);
             if (!cell_same(a, p)) {
@@ -1933,7 +1941,7 @@ static void draw_frame(Session *s, Client *c, Grid *scr) {
         }
         if (first < 0) continue;
         if (first > 0 && grid_at(scr, first, y)->ch == WIDE_CONT) first--;
-        if (last + 1 < scr->w && grid_at(scr, last + 1, y)->ch == WIDE_CONT) last++;
+        if (last + 1 < vw && grid_at(scr, last + 1, y)->ch == WIDE_CONT) last++;
         buf_printf(&b, "\x1b[%d;%dH", y + 1 + offy, first + 1 + offx);
 
         int32_t cf = -3, cb = -3;
@@ -1959,7 +1967,7 @@ static void draw_frame(Session *s, Client *c, Grid *scr) {
     int cx, cy, vis;
     cursor_for(s, c, &cx, &cy, &vis);
     buf_puts(&b, "\x1b[0m");
-    if (vis && cy == 0) vis = 0;
+    if (vis && (cy == 0 || cx >= vw || cy >= vh)) vis = 0;
     if (vis) {
         buf_printf(&b, "\x1b[%d;%dH\x1b[?25h", cy + 1 + offy, cx + 1 + offx);
     } else {
@@ -2018,19 +2026,24 @@ static void invalidate_clients(Session *s) {
 }
 
 static void session_recalc_size(Session *s) {
-    int cols = 0, rows = 0, any = 0;
+    /* The most recently attached or resized client decides the session size.
+       This makes a reattach from a larger terminal grow the session even if an
+       older, smaller client is still connected. Such clients render only the
+       part of the session that fits (see draw_frame). */
+    Client *best = NULL;
     for (Client *c = s->clients; c; c = c->next) {
-        if (!c->attached) continue;
-        if (!any || c->cols < cols) cols = c->cols;
-        if (!any || c->rows < rows) rows = c->rows;
-        any = 1;
+        if (!c->attached || c->dead || c->fd < 0) continue;
+        if (!best || c->order > best->order) best = c;
     }
-    if (!any) return;
+    if (!best) return;
+    int cols = best->cols;
+    int rows = best->rows;
     if (cols < MIN_COLS) cols = MIN_COLS;
     if (rows < MIN_ROWS) rows = MIN_ROWS;
     if (cols == s->w && rows == s->h) return;
     s->w = cols;
     s->h = rows;
+    s->redraw = 1;
     session_layout(s);
     invalidate_clients(s);
 }
@@ -2540,6 +2553,15 @@ static void prefix_command(Client *c, Session *s, int key) {
     case 'r':
         client_message(c, "Configuration Reloaded!");
         break;
+    case 'R':
+        /* Make this client's terminal the size source again, even if another
+           client attached or resized more recently. */
+        c->order = ++s->client_order;
+        session_recalc_size(s);
+        invalidate_clients(s);
+        s->redraw = 1;
+        client_message(c, "Session resized to %dx%d", s->w, s->h);
+        break;
     case '-':
         split_pane(s, L_ROWS);
         break;
@@ -2873,6 +2895,8 @@ static void handle_message(Client *c, Session *s, uint32_t type, const unsigned 
             c->rows = (int)rows;
             c->truecolor = (flags & 1) != 0;
             c->attached = 1;
+            c->order = ++s->client_order;
+            client_invalidate(c);
             session_recalc_size(s);
             invalidate_clients(s);
         }
@@ -2887,6 +2911,8 @@ static void handle_message(Client *c, Session *s, uint32_t type, const unsigned 
             if (rows > 1000) rows = 1000;
             c->cols = (int)cols;
             c->rows = (int)rows;
+            c->order = ++s->client_order;
+            client_invalidate(c);
             session_recalc_size(s);
             invalidate_clients(s);
         }
@@ -3050,6 +3076,19 @@ static void run_server(Session *s) {
         free(pfds);
         free(cmap);
 
+        /* Reap dead clients before drawing so a removed client's size change
+           is reflected in this frame instead of waiting for the next event. */
+        Client *c = s->clients;
+        while (c) {
+            Client *next = c->next;
+            if (c->dead) client_remove(s, c);
+            c = next;
+        }
+        if (s->redraw) {
+            s->redraw = 0;
+            dirty = 1;
+        }
+
         long long t = now_ms();
         if (t - s->last_status >= STATUS_INTERVAL * 1000) {
             s->last_status = t;
@@ -3065,13 +3104,6 @@ static void run_server(Session *s) {
                 grid_free(&scr);
             }
             dirty = 0;
-        }
-
-        Client *c = s->clients;
-        while (c) {
-            Client *next = c->next;
-            if (c->dead) client_remove(s, c);
-            c = next;
         }
     }
 
@@ -3596,6 +3628,7 @@ static void print_help(FILE *out) {
         "  Ctrl-A Ctrl-X         lock the client\n"
         "  Ctrl-A *              list attached clients\n"
         "  Ctrl-A r              show \"Configuration Reloaded!\"\n"
+        "  Ctrl-A R              resize session to this terminal (force)\n"
         "  Ctrl-A d              detach\n"
         "  Ctrl-A Ctrl-D         detach\n"
         "  Ctrl-A \\              kill server (confirm)\n"

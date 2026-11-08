@@ -60,7 +60,7 @@ The client now reconciles its size with `TIOCGWINSZ` every `SIZE_CHECK_MS`
 (250 ms) instead of only reacting to `SIGWINCH`. Some terminals update the pty
 size without delivering a signal, or deliver it before the new size is
 visible; the periodic check corrects both. Keep the SIGWINCH self-pipe and flag
-as the low-latency path. Note that the session is intentionally sized to the
-smallest attached client, so a larger client still shows the session centred
-with a border; use `Ctrl-A *` to check for extra attached clients when
-diagnosing "it did not grow" reports.
+as the low-latency path. The session size is set by the most recently attached
+or resized client, so reattaching from a larger terminal grows the session even
+if an older client is still connected; smaller clients show the top-left part.
+Use `Ctrl-A *` to list attached clients when diagnosing size reports.

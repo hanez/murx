@@ -24,9 +24,10 @@ sent straight to the pane.
 - Real ptys per pane, a built-in VT100/xterm-ish screen emulator (colors,
   256-color and truecolor SGR, alternate screen, scrolling, UTF-8, wide
   characters).
-- Multiple clients can attach to the same session. The session is sized to the
-  smallest attached client; a larger client shows the session centred in its
-  terminal.
+- Multiple clients can attach to the same session. The most recently attached
+  or resized client sets the session size; a larger client shows the session
+  centred in its terminal, while a smaller client shows the top-left part.
+  `Ctrl-A R` forces the session back to the current client's terminal size.
 - Panes run `$SHELL` as a login shell with `TERM=screen-256color`.
 
 ## Keys
@@ -54,6 +55,7 @@ Prefix is `Ctrl-A`. Every shortcut below is `Ctrl-A`, then the key(s) shown.
 | `Ctrl-A &` | kill window (confirm) |
 | `Ctrl-A \` | kill server (confirm) |
 | `Ctrl-A r` | show `Configuration Reloaded!` |
+| `Ctrl-A R` | force the session to this client's terminal size |
 | `Ctrl-A *` | list attached clients |
 | `Ctrl-A d`, `Ctrl-A Ctrl-D` | detach |
 
