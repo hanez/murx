@@ -1117,7 +1117,10 @@ static Pane *pane_new(const char *cwd, int w, int h, const char *title) {
     snprintf(slave_path, sizeof slave_path, "%s", slave);
 
     const char *shell = getenv("SHELL");
-    if (!shell || !*shell) shell = "/bin/sh";
+    if (!shell || !*shell) {
+        if (access("/usr/bin/zsh", X_OK) == 0) shell = "/usr/bin/zsh";
+        else shell = "/bin/sh";
+    }
 
     /* Open the slave and give it its size before forking. The server keeps
        this fd for the pane's lifetime: a pty with no slave open would report
@@ -1298,7 +1301,10 @@ static void window_renumber(Window *list) {
 static Window *window_new(Session *s, const char *name) {
     Window *w = xcalloc(1, sizeof *w);
     const char *shell = getenv("SHELL");
-    if (!shell || !*shell) shell = "/bin/sh";
+    if (!shell || !*shell) {
+        if (access("/usr/bin/zsh", X_OK) == 0) shell = "/usr/bin/zsh";
+        else shell = "/bin/sh";
+    }
     const char *base = strrchr(shell, '/');
     base = base ? base + 1 : shell;
     snprintf(w->name, sizeof w->name, "%s", name ? name : base);
