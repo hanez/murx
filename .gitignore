@@ -1,0 +1,29 @@
+# Ignore all binaries / build artifacts
+*
+!*/
+!*.c
+!*.h
+!Makefile
+!*.md
+!*.txt
+!LICENSE*
+!COPYING*
+!.gitignore
+!.gitattributes
+!*.sh
+
+# Debug symbols (macOS)
+/*.dSYM/
+
+# Editor/OS
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Tooling
+compile_commands.json
+.cache/
+
