@@ -4,7 +4,7 @@ A deliberately small terminal multiplexer. One C file, no config file, no
 dependencies.
 
 ```sh
-make
+make -B CC=clang
 ./moerx            # session "0"
 ./moerx work       # separate named session
 ./moerx --help     # all shortcuts
@@ -29,6 +29,10 @@ sent straight to the pane.
   centred in its terminal, while a smaller client shows the top-left part.
   `Ctrl-A R` forces the session back to the current client's terminal size.
 - Panes run `$SHELL` as a login shell with `TERM=screen-256color`.
+- Window names follow the foreground program in their active pane, refreshed
+  every second, including in inactive windows. When a program exits, the name
+  returns to the shell. For pipelines, the foreground process group leader
+  supplies the name. Linux uses `/proc`; other systems use `ps`.
 
 ## Keys
 
@@ -42,7 +46,7 @@ Prefix is `Ctrl-A`. Every shortcut below is `Ctrl-A`, then the key(s) shown.
 | `Ctrl-A p`, `Ctrl-A Ctrl-P`, `Ctrl-A Backspace` | previous window |
 | `Ctrl-A Ctrl-A` | last window |
 | `Ctrl-A w`, `Ctrl-A Ctrl-W`, `Ctrl-A "` | window menu (↑/↓, `j`/`k`, Enter) |
-| `Ctrl-A A` | rename window (prompt) |
+| `Ctrl-A A` | temporarily rename window (until the next automatic name refresh) |
 | `Ctrl-A 0` … `Ctrl-A 9` | select window by its number in the status line |
 | `Ctrl-A -` | split top/bottom |
 | `Ctrl-A \|`, `Ctrl-A %` | split left/right |

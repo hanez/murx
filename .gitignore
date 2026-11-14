@@ -1,16 +1,5 @@
-# Ignore all binaries / build artifacts
-*
-!*/
-!*.c
-!*.h
-!Makefile
-!*.md
-!*.txt
-!LICENSE*
-!COPYING*
-!.gitignore
-!.gitattributes
-!*.sh
+# Build files
+moerx
 
 # Debug symbols (macOS)
 /*.dSYM/
@@ -26,4 +15,3 @@
 # Tooling
 compile_commands.json
 .cache/
-

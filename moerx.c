@@ -100,6 +100,7 @@ static int send_msg(int fd, uint32_t type, const void *data, uint32_t len);
 #define MSG_TIME 3000
 #define STATUS_INTERVAL 2
 #define SIZE_CHECK_MS 250
+#define NAME_CHECK_MS 1000
 
 /* ------------------------------------------------------------------ */
 /* small helpers                                                      */
@@ -1056,7 +1057,53 @@ struct Session {
     int redraw;            /* a removed client changed the session size */
 
     long long last_status;
+    long long last_name_check;
 };
+
+/* Use the active pane's foreground process group, so returning from a job
+   restores the shell name. Titles set with OSC are independent of this. */
+static int window_update_name(Window *w) {
+    Pane *p = w->active;
+    if (!p || !p->alive) return 0;
+    /* Linux permits this query on the master even though the server does
+       not own the slave as its controlling terminal. */
+    pid_t pid = tcgetpgrp(p->fd);
+    if (pid <= 0) pid = tcgetpgrp(p->tty_fd);
+    if (pid <= 0) return 0;
+    char name[256];
+    FILE *f = NULL;
+#ifdef __linux__
+    char path[64];
+    snprintf(path, sizeof path, "/proc/%ld/comm", (long)pid);
+    f = fopen(path, "r");
+    if (!f) return 0;
+    int ok = fgets(name, sizeof name, f) != NULL;
+    fclose(f);
+#else
+    /* POSIX fallback for systems without Linux procfs. The only interpolated
+       value is the numeric process group ID obtained from the pane's tty. */
+    char command[96];
+    snprintf(command, sizeof command, "ps -p %ld -o comm=", (long)pid);
+    f = popen(command, "r");
+    if (!f) return 0;
+    int ok = fgets(name, sizeof name, f) != NULL;
+    if (pclose(f) != 0) ok = 0;
+#endif
+    if (!ok) return 0;
+    name[strcspn(name, "\r\n")] = '\0';
+    char *base = strrchr(name, '/');
+    base = base ? base + 1 : name;
+    while (*base == '-' || *base == ' ' || *base == '\t') base++;
+    if (!*base) return 0;
+    for (char *s = base; *s; s++) {
+        if ((unsigned char)*s < 32 || (unsigned char)*s == 127) *s = '?';
+    }
+    char next[sizeof w->name];
+    snprintf(next, sizeof next, "%.*s", (int)sizeof next - 1, base);
+    if (strcmp(w->name, next) == 0) return 0;
+    snprintf(w->name, sizeof w->name, "%s", next);
+    return 1;
+}
 
 static void pane_set_winsize(Pane *p, int w, int h) {    struct winsize ws;
     memset(&ws, 0, sizeof ws);
@@ -3096,6 +3143,12 @@ static void run_server(Session *s) {
         }
 
         long long t = now_ms();
+        if (t - s->last_name_check >= NAME_CHECK_MS) {
+            s->last_name_check = t;
+            for (Window *w = s->windows; w; w = w->next) {
+                if (window_update_name(w)) dirty = 1;
+            }
+        }
         if (t - s->last_status >= STATUS_INTERVAL * 1000) {
             s->last_status = t;
             dirty = 1;
