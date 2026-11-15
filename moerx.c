@@ -54,7 +54,7 @@
 #include <wchar.h>
 #include <wctype.h>
 
-#define PREFIX 0x01
+#define DEFAULT_PREFIX 0x01
 
 /* client -> server */
 enum { C_ATTACH = 1, C_INPUT = 2, C_RESIZE = 3 };
@@ -1037,6 +1037,7 @@ struct Client {
 
     int locked;
     int prefix_pending;
+    unsigned char prefix;
 
     int mode;              /* 0 none, 1 prompt, 2 menu, 3 confirm */
     int prompt_kind;       /* 1 rename window, 2 choose window */
@@ -2576,7 +2577,7 @@ static void prefix_command(Client *c, Session *s, int key) {
     switch (key) {
     case 'a':
         if (s->cur && s->cur->active) {
-            unsigned char b = PREFIX;
+            unsigned char b = c->prefix;
             pane_write(s->cur->active, &b, 1);
         }
         break;
@@ -2609,9 +2610,6 @@ static void prefix_command(Client *c, Session *s, int key) {
         break;
     case 'A':
         start_rename_prompt(c, s);
-        break;
-    case 0x01:
-        switch_last_window(s);
         break;
     case 0x10:
     case 'p':
@@ -2705,6 +2703,11 @@ static void prefix_command(Client *c, Session *s, int key) {
 static int handle_prefix_key(Client *c, Session *s, const unsigned char *buf, size_t n) {
     if (n == 0) return 0;
     unsigned char b = buf[0];
+    if (b == c->prefix) {
+        c->prefix_pending = 0;
+        switch_last_window(s);
+        return 1;
+    }
     int key = b;
     int used = 1;
     if (b == 0x1b) {
@@ -2875,13 +2878,13 @@ static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t 
             i += (size_t)used;
             continue;
         }
-        if (p[0] == PREFIX) {
+        if (p[0] == c->prefix) {
             c->prefix_pending = 1;
             i++;
             continue;
         }
         size_t j = i;
-        while (j < c->inlen && c->in[j] != PREFIX) j++;
+        while (j < c->inlen && c->in[j] != c->prefix) j++;
         if (s->cur && s->cur->active) pane_write(s->cur->active, c->in + i, j - i);
         i = j;
     }
@@ -2982,6 +2985,7 @@ static void client_remove(Session *s, Client *c) {
 static Client *client_new(int fd) {
     Client *c = xcalloc(1, sizeof *c);
     c->fd = fd;
+    c->prefix = DEFAULT_PREFIX;
     return c;
 }
 
@@ -2992,6 +2996,10 @@ static void handle_message(Client *c, Session *s, uint32_t type, const unsigned 
             memcpy(&cols, data, 4);
             memcpy(&rows, data + 4, 4);
             if (len >= 12) memcpy(&flags, data + 8, 4);
+            uint32_t prefix = DEFAULT_PREFIX;
+            if (len >= 16) memcpy(&prefix, data + 12, 4);
+            if (prefix < 1 || prefix > 26) { c->dead = 1; return; }
+            c->prefix = (unsigned char)prefix;
             if (cols < 1) cols = 1;
             if (rows < 1) rows = 1;
             if (cols > 1000) cols = 1000;
@@ -3522,7 +3530,7 @@ static int terminal_truecolor(void) {
     return 1;
 }
 
-static int run_client(int fd, const char *name) {
+static int run_client(int fd, const char *name, unsigned char prefix) {
     struct termios saved;
     if (tty_raw(&saved) < 0) {
         fprintf(stderr, "moerx: not a terminal\n");
@@ -3557,8 +3565,8 @@ static int run_client(int fd, const char *name) {
 
     int cols, rows;
     tty_size(&cols, &rows);
-    uint32_t attach[3] = { (uint32_t)cols, (uint32_t)rows,
-                           (uint32_t)terminal_truecolor() };
+    uint32_t attach[4] = { (uint32_t)cols, (uint32_t)rows,
+                           (uint32_t)terminal_truecolor(), prefix };
     if (send_msg(fd, C_ATTACH, attach, sizeof attach) < 0) {
         /* errno is the only clue: the server accepted the connection but the
            attach write failed, usually because it closed the socket while
@@ -3688,14 +3696,17 @@ static int run_client(int fd, const char *name) {
 
 static void print_help(FILE *out) {
     fprintf(out,
-        "usage: moerx [session]\n"
+        "usage: moerx [-p C-key] [session]\n"
         "       moerx -h | --help\n"
         "\n"
         "Attach to a running session, or start it if it is not running.\n"
         "The session name defaults to \"0\".\n"
         "\n"
-        "Every shortcut starts with the Ctrl-A prefix: press Ctrl-A, release it,\n"
-        "then press the key shown. Ctrl-B is not a prefix and is sent to the pane.\n"
+        "Use -p C-x (or --prefix C-x) to choose Ctrl-X as this client's prefix.\n"
+        "Keys C-a through C-z are supported; the default is C-a.\n"
+        "The shortcuts below use the default Ctrl-A prefix. Replace it with\n"
+        "your chosen prefix, including both keys in the last-window shortcut.\n"
+        "Prefix then a sends the chosen prefix literally to the pane.\n"
         "\n"
         "Windows\n"
         "  Ctrl-A c              new window\n"
@@ -3748,20 +3759,39 @@ static void print_help(FILE *out) {
         "Inside prompts use Enter to accept, Escape to cancel, Ctrl-U to clear.\n");
 }
 
+static int parse_prefix(const char *text, unsigned char *prefix) {
+    if (!text || strlen(text) != 3 ||
+        (text[0] != 'C' && text[0] != 'c') || text[1] != '-') return 0;
+    unsigned char letter = (unsigned char)text[2];
+    if (letter >= 'A' && letter <= 'Z') letter += 'a' - 'A';
+    if (letter < 'a' || letter > 'z') return 0;
+    *prefix = letter - 'a' + 1;
+    return 1;
+}
+
 int main(int argc, char **argv) {
     setlocale(LC_CTYPE, "");
 
     int argi = 1;
-    if (argc > 1 && strcmp(argv[1], "--") == 0) {
-        argi = 2;
-    } else if (argc > 1 && (strcmp(argv[1], "-h") == 0 ||
-                            strcmp(argv[1], "--help") == 0)) {
-        print_help(stdout);
-        return 0;
-    } else if (argc > 1 && argv[1][0] == '-' && argv[1][1] != '\0') {
-        fprintf(stderr, "moerx: unknown option '%s'\n", argv[1]);
-        fprintf(stderr, "Try 'moerx --help' for more information.\n");
-        return 2;
+    unsigned char prefix = DEFAULT_PREFIX;
+    while (argi < argc && argv[argi][0] == '-' && argv[argi][1]) {
+        const char *option = argv[argi++];
+        if (strcmp(option, "--") == 0) break;
+        if (strcmp(option, "-h") == 0 || strcmp(option, "--help") == 0) {
+            print_help(stdout);
+            return 0;
+        }
+        if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
+            if (argi >= argc || !parse_prefix(argv[argi], &prefix)) {
+                fprintf(stderr, "moerx: %s requires a key from C-a through C-z\n", option);
+                return 2;
+            }
+            argi++;
+        } else {
+            fprintf(stderr, "moerx: unknown option '%s'\n", option);
+            fprintf(stderr, "Try 'moerx --help' for more information.\n");
+            return 2;
+        }
     }
 
     if (argc - argi > 1) {
@@ -3786,6 +3816,6 @@ int main(int argc, char **argv) {
                 name, strerror(errno));
         return 1;
     }
-    return run_client(fd, name);
+    return run_client(fd, name, prefix);
 }
 
