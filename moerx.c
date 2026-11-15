@@ -1129,6 +1129,7 @@ struct Session {
     int show_cwd;
     int show_clock;
     int show_moerx;
+    int show_hostname;
     Window *windows;
     Window *cur, *last;
     int nwin;
@@ -1161,7 +1162,7 @@ static int pane_remote_title(Pane *p, pid_t pid) {
 
 /* Use the active pane's foreground process group, so returning from a job
    restores the shell name. */
-static int window_update_name(Window *w) {
+static int window_update_name(Session *s, Window *w) {
     Pane *p = w->active;
     if (!p || !p->alive) return 0;
     /* Linux permits this query on the master even though the server does
@@ -1199,17 +1200,24 @@ static int window_update_name(Window *w) {
     }
     char next[sizeof w->name];
     if (strcmp(base, "ssh") == 0 && p->remote_title_pgrp == pid && p->remote_title[0]) {
-        snprintf(next, sizeof next, "%s", p->remote_title);
-    } else {
+        if (s->show_hostname) {
+            snprintf(next, sizeof next, "%s", p->remote_title);
+        } else {
+            const char *colon = strchr(p->remote_title, ':');
+            snprintf(next, sizeof next, "%s", colon ? colon + 1 : p->remote_title);
+        }
+    } else if (s->show_hostname) {
         char host[256];
         if (gethostname(host, sizeof host) < 0) snprintf(host, sizeof host, "localhost");
         host[sizeof host - 1] = '\0';
         char *dot = strchr(host, '.');
         if (dot) *dot = '\0';
-        for (char *s = host; *s; s++) {
-            if ((unsigned char)*s < 32 || (unsigned char)*s == 127) *s = '?';
+        for (char *h = host; *h; h++) {
+            if ((unsigned char)*h < 32 || (unsigned char)*h == 127) *h = '?';
         }
         snprintf(next, sizeof next, "%.63s:%.63s", host, base);
+    } else {
+        snprintf(next, sizeof next, "%.63s", base);
     }
     if (strcmp(w->name, next) == 0) return 0;
     snprintf(w->name, sizeof w->name, "%s", next);
@@ -1469,7 +1477,18 @@ static Window *window_new(Session *s, const char *name) {
     }
     const char *base = strrchr(shell, '/');
     base = base ? base + 1 : shell;
-    snprintf(w->name, sizeof w->name, "%s", name ? name : base);
+    if (name) {
+        snprintf(w->name, sizeof w->name, "%s", name);
+    } else if (s->show_hostname) {
+        char host[256];
+        if (gethostname(host, sizeof host) < 0) snprintf(host, sizeof host, "localhost");
+        host[sizeof host - 1] = '\0';
+        char *dot = strchr(host, '.');
+        if (dot) *dot = '\0';
+        snprintf(w->name, sizeof w->name, "%.63s:%.63s", host, base);
+    } else {
+        snprintf(w->name, sizeof w->name, "%s", base);
+    }
 
     char host[256];
     if (gethostname(host, sizeof host) < 0) snprintf(host, sizeof host, "localhost");
@@ -3433,7 +3452,7 @@ static void run_server(Session *s) {
         if (t - s->last_name_check >= NAME_CHECK_MS) {
             s->last_name_check = t;
             for (Window *w = s->windows; w; w = w->next) {
-                if (window_update_name(w)) dirty = 1;
+                if (window_update_name(s, w)) dirty = 1;
             }
         }
         if (t - s->last_status >= STATUS_INTERVAL * 1000) {
@@ -3494,7 +3513,7 @@ static void server_fail(int readyfd, const char *stage, int err) {
     close(readyfd);
 }
 
-static void server_start(const char *path, const char *name, int readyfd, int show_cwd, int show_clock, int show_moerx) {
+static void server_start(const char *path, const char *name, int readyfd, int show_cwd, int show_clock, int show_moerx, int show_hostname) {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
     signal(SIGCHLD, SIG_DFL);
@@ -3545,6 +3564,7 @@ static void server_start(const char *path, const char *name, int readyfd, int sh
     s->show_cwd = show_cwd;
     s->show_clock = show_clock;
     s->show_moerx = show_moerx;
+    s->show_hostname = show_hostname;
     s->last_status = now_ms();
 
     Window *w = window_new(s, NULL);
@@ -3624,7 +3644,7 @@ static int ensure_socket_dir(void) {
     return 0;
 }
 
-static int spawn_server(const char *path, const char *name, int show_cwd, int show_clock, int show_moerx) {
+static int spawn_server(const char *path, const char *name, int show_cwd, int show_clock, int show_moerx, int show_hostname) {
     if (ensure_socket_dir() < 0) return -1;
     char dir[PATH_MAX], lockpath[PATH_MAX + 64];
     socket_dir(dir, sizeof dir);
@@ -3672,7 +3692,7 @@ static int spawn_server(const char *path, const char *name, int show_cwd, int sh
             if (dn > 2) close(dn);
         }
         close(lock);
-        server_start(path, name, p[1], show_cwd, show_clock, show_moerx);
+        server_start(path, name, p[1], show_cwd, show_clock, show_moerx, show_hostname);
         _exit(1);
     }
     close(p[1]);
@@ -3929,7 +3949,7 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
 
 static void print_help(FILE *out) {
     fprintf(out,
-        "usage: moerx [-p letter] [-s top|bottom] [--no-cwd] [--no-clock] [--no-moerx] [session]\n"
+        "usage: moerx [-p letter] [-s top|bottom] [--no-cwd] [--no-clock] [--no-moerx] [--no-hostname] [session]\n"
         "       moerx -h | --help\n"
         "\n"
         "Attach to a running session, or start it if it is not running.\n"
@@ -3941,6 +3961,7 @@ static void print_help(FILE *out) {
         "Use --no-cwd to hide the current directory in the status bar.\n"
         "Use --no-clock to hide the clock in the status bar.\n"
         "Use --no-moerx to hide [moerx] in the status bar when using --no-clock.\n"
+        "Use --no-hostname to hide the hostname: prefix in window titles.\n"
         "\n"
         "Use -p x (or --prefix x) to choose Ctrl-X as this client's prefix.\n"
         "Letters a through z are supported (case-insensitive); the default is a (Ctrl-A).\n"
@@ -4018,6 +4039,7 @@ int main(int argc, char **argv) {
     int show_cwd = 1;
     int show_clock = 1;
     int show_moerx = 1;
+    int show_hostname = 1;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1]) {
         const char *option = argv[argi++];
         if (strcmp(option, "--") == 0) break;
@@ -4031,6 +4053,8 @@ int main(int argc, char **argv) {
             show_clock = 0;
         } else if (strcmp(option, "--no-moerx") == 0) {
             show_moerx = 0;
+        } else if (strcmp(option, "--no-hostname") == 0) {
+            show_hostname = 0;
         } else if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
             if (argi >= argc || !parse_prefix(argv[argi], &prefix)) {
                 fprintf(stderr, "moerx: %s requires a letter from a through z\n", option);
@@ -4067,7 +4091,7 @@ int main(int argc, char **argv) {
     make_socket_path(name, path, sizeof path);
 
     int fd = connect_session(path);
-    if (fd < 0) fd = spawn_server(path, name, show_cwd, show_clock, show_moerx);
+    if (fd < 0) fd = spawn_server(path, name, show_cwd, show_clock, show_moerx, show_hostname);
     if (fd < 0) {
         fprintf(stderr, "moerx: cannot start or attach session '%s': %s\n",
                 name, strerror(errno));

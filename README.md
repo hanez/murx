@@ -14,6 +14,7 @@ make -B CC=clang
 ./moerx --no-cwd work        # show [moerx] instead of the directory
 ./moerx --no-clock work      # hide the status bar clock
 ./moerx --no-clock --no-moerx work # hide clock and [moerx]
+./moerx --no-hostname work   # hide the hostname: prefix in window titles
 ./moerx --help               # all shortcuts
 ```
 
@@ -44,8 +45,9 @@ older versions once before using this option.
 
 Use `--no-cwd` to show `[moerx]` on the left of the status bar instead of the
 current directory, and `--no-clock` to hide the clock on the right. Use
-`--no-moerx` to hide `[moerx]` when using `--no-clock` (and `--no-cwd`). These
-options apply when starting a new session.
+`--no-moerx` to hide `[moerx]` when using `--no-clock` (and `--no-cwd`). Use
+`--no-hostname` to hide the `hostname:` prefix in window names and the outer
+terminal title. These options apply when starting a new session.
 
 ## What it does
 
@@ -70,22 +72,23 @@ options apply when starting a new session.
   published with `rsync -a`.
 - Window names show `hostname:program` for the foreground program in their
   active pane (for example `laptop:zsh` or `laptop:vim`), refreshed
-  every second, including in inactive windows. When a program exits, the name
-  returns to the shell. For pipelines, the foreground process group leader
-  supplies the name. Linux uses `/proc`; other systems use `ps`.
+  every second, including in inactive windows. With `--no-hostname`, they show
+  only `program`. When a program exits, the name returns to the shell. For
+  pipelines, the foreground process group leader supplies the name. Linux uses
+  `/proc`; other systems use `ps`.
 
 ## SSH window names and directories
 
 While an SSH pane is active, the outer terminal's window title shows
 `[moerx] remote-hostname:program`, for example `[moerx] server:vim`.
-The moerx window list also shows `server:vim`. Starting another
-remote program updates the title, and returning to the prompt shows the
-remote shell name, for example `[moerx] server:zsh`.
+The moerx window list also shows `server:vim` (or `vim` with `--no-hostname`).
+Starting another remote program updates the title, and returning to the prompt
+shows the remote shell name, for example `[moerx] server:zsh`.
 The remote shell must send an OSC 0 or OSC 2 terminal title in
 that format: SSH itself does not report the remote foreground program.
-Without a matching title, the window name remains `local-hostname:ssh`.
-Names refresh within one second; disconnecting restores the local hostname
-and shell name in the terminal title and window list.
+Without a matching title, the window name remains `local-hostname:ssh` (or
+`ssh` with `--no-hostname`). Names refresh within one second; disconnecting
+restores the local hostname and shell name in the terminal title and window list.
 
 For **zsh**, add this to `~/.zshrc` on the **remote host**:
 
@@ -211,7 +214,8 @@ unless the outer terminal advertises `COLORTERM=truecolor` and is not
 screen/tmux/linux.
 
 The terminal window title is set to `[moerx] hostname:program`, following the
-active moerx window. Hostnames use their short form (before the first dot).
+active moerx window (or `[moerx] program` with `--no-hostname`). Hostnames use
+their short form (before the first dot).
 
 ## Deliberate limitations
 
