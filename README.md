@@ -24,6 +24,9 @@ sent straight to the pane.
 - Real ptys per pane, a built-in VT100/xterm-ish screen emulator (colors,
   256-color and truecolor SGR, alternate screen, scrolling, UTF-8, wide
   characters).
+- Application cursor-key mode follows the active pane, so arrow navigation
+  works in programs such as Midnight Commander. Menus and prompts use normal
+  cursor-key mode; detaching restores normal cursor keys in the outer terminal.
 - Multiple clients can attach to the same session. The most recently attached
   or resized client sets the session size; a larger client shows the session
   centred in its terminal, while a smaller client shows the top-left part.

@@ -295,6 +295,7 @@ struct Pane {
     int wrap_pending;
     int scroll_top, scroll_bot;
     int cursor_visible;
+    int app_cursor;        /* DEC private mode 1: application cursor keys */
     int insert_mode;
 
     Pen pen;
@@ -483,6 +484,7 @@ static void em_reset(Pane *p) {
     p->pen.attr = 0;
     p->cursor_visible = 1;
     p->insert_mode = 0;
+    p->app_cursor = 0;
     p->pstate = PS_GROUND;
 }
 
@@ -769,7 +771,8 @@ static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
         for (int i = 0; i < pn; i++) {
             int v = ps[i];
             if (priv) {
-                if (v == 25) p->cursor_visible = on;
+                if (v == 1) p->app_cursor = on;
+                else if (v == 25) p->cursor_visible = on;
                 else if (v == 47 || v == 1047 || v == 1049) em_set_alt(p, on);
                 else if (v == 1048) {
                     if (on) {
@@ -2061,6 +2064,13 @@ static void draw_frame(Session *s, Client *c, Grid *scr) {
 
     int cx, cy, vis;
     cursor_for(s, c, &cx, &cy, &vis);
+    /* Match the pane's DECCKM request on every attached terminal. Otherwise
+       screen-256color applications such as mc expect ESC O A/B/C/D while
+       the outer terminal continues sending ESC [ A/B/C/D. Overlays use
+       normal cursor keys; switching panes restores that pane's mode. */
+    int app_cursor = !c->locked && c->mode == 0 && !c->prefix_pending &&
+                     s->cur && s->cur->active && s->cur->active->app_cursor;
+    buf_puts(&b, app_cursor ? "\x1b[?1h" : "\x1b[?1l");
     buf_puts(&b, "\x1b[0m");
     if (vis && (cy == 0 || cx >= vw || cy >= vh)) vis = 0;
     if (vis) {
@@ -3469,7 +3479,7 @@ static int tty_raw(struct termios *saved) {
 }
 
 static void tty_restore(struct termios *saved) {
-    const char *seq = "\x1b[0m\x1b[?25h\x1b[?1049l";
+    const char *seq = "\x1b[?1l\x1b[0m\x1b[?25h\x1b[?1049l";
     write_all(STDOUT_FILENO, seq, strlen(seq));
     tcsetattr(STDIN_FILENO, TCSAFLUSH, saved);
 }
@@ -3541,7 +3551,7 @@ static int run_client(int fd, const char *name) {
     signal(SIGPIPE, SIG_IGN);
 
     {
-        const char *seq = "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H";
+        const char *seq = "\x1b[?1049h\x1b[?1l\x1b[?25l\x1b[2J\x1b[H";
         write_all(STDOUT_FILENO, seq, strlen(seq));
     }
 
