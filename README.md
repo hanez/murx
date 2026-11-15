@@ -81,14 +81,16 @@ terminal title. These options apply when starting a new session.
 
 While an SSH pane is active, the outer terminal's window title shows
 `[moerx] remote-hostname:program`, for example `[moerx] server:vim`.
-The moerx window list also shows `server:vim` (or `vim` with `--no-hostname`).
-Starting another remote program updates the title, and returning to the prompt
-shows the remote shell name, for example `[moerx] server:zsh`.
+The moerx window list also shows `server:vim`. Starting another
+remote program updates the title, and returning to the prompt shows the
+remote shell name, for example `[moerx] server:zsh`.
 The remote shell must send an OSC 0 or OSC 2 terminal title in
 that format: SSH itself does not report the remote foreground program.
-Without a matching title, the window name remains `local-hostname:ssh` (or
-`ssh` with `--no-hostname`). Names refresh within one second; disconnecting
-restores the local hostname and shell name in the terminal title and window list.
+Without a matching title, the window name remains `local-hostname:ssh`.
+Names refresh within one second; disconnecting restores the local hostname
+and shell name in the terminal title and window list.
+
+### Zsh
 
 For **zsh**, add this to `~/.zshrc` on the **remote host**:
 
@@ -125,6 +127,67 @@ The hook also reports the remote working directory before each command and at
 each prompt, so the status bar follows remote `cd` commands and shows `~` for
 the remote home directory. Disconnecting restores the local path. Restart
 existing moerx servers and reload the remote shell configuration after upgrading.
+
+### Bash
+
+For **Bash**, add this to `~/.bashrc` on the **remote host**:
+
+```bash
+if [[ $- == *i* && -n $SSH_CONNECTION && -z ${moerx_ssh_installed-} ]]; then
+    moerx_ssh_title() {
+        local program=$1 directory=$PWD
+        program=${program##*/}
+        printf '\033]2;%s:%s\007' "${HOSTNAME%%.*}" "$program"
+        if [[ $directory == "$HOME" ]]; then
+            directory='~'
+        elif [[ $directory == "$HOME/"* ]]; then
+            directory="~/${directory#"$HOME/"}"
+        fi
+        printf '\033]777;moerx-cwd;%s\007' "$directory"
+    }
+    moerx_ssh_preexec() {
+        if [[ ${moerx_ssh_ready-0} == 1 && $1 != moerx_ssh_precmd ]]; then
+            moerx_ssh_ready=0
+            local program rest
+            read -r program rest <<< "$1"
+            # Strip quotes around a simple command name without evaluating it.
+            program=${program#\"}; program=${program%\"}
+            program=${program#\'}; program=${program%\'}
+            moerx_ssh_title "$program"
+        fi
+        return 0
+    }
+    moerx_ssh_precmd() {
+        local last_status=$?
+        moerx_ssh_title bash
+        moerx_ssh_ready=1
+        return "$last_status"
+    }
+    # Keep existing prompt commands, and run our prompt hook last.
+    if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == 'declare -a '* ]]; then
+        PROMPT_COMMAND+=(moerx_ssh_precmd)
+    else
+        PROMPT_COMMAND=("${PROMPT_COMMAND-}" moerx_ssh_precmd)
+    fi
+    trap 'moerx_ssh_preexec "$BASH_COMMAND"' DEBUG
+    moerx_ssh_installed=1
+fi
+```
+
+This updates `hostname:program` before a command, restores `hostname:bash`
+at the prompt, and reports the remote directory with `$HOME` shortened to
+`~`. The hooks print only invisible terminal updates. Source `~/.bashrc` or
+open a new SSH shell after installing them.
+
+The Bash snippet preserves string and array forms of `PROMPT_COMMAND` and
+avoids duplicate hooks when sourced again. It installs a `DEBUG` trap; if your
+shell configuration already uses one (for example through bash-preexec),
+integrate these functions with that framework instead of replacing its trap.
+Command names come from the first whitespace-delimited word of Bash's first
+simple command; aliases, compound commands, assignments and quoted executable
+paths containing spaces may display differently from the Zsh hook. The command
+text is never evaluated by the hook. Do not enable function tracing (`set -T`)
+for these hooks.
 
 moerx accepts standard OSC 7 reports (`ESC ] 7 ; file://host/path BEL`) too,
 including percent-encoded paths. These display the reported absolute path;
