@@ -5,11 +5,11 @@ dependencies.
 
 ```sh
 make -B CC=clang
-./moerx             # session "0"
-./moerx work        # separate named session
-./moerx -p x work # use Ctrl-X as this client's prefix
+./moerx                # session "0"
+./moerx work           # separate named session
+./moerx -p x work      # use Ctrl-X as this client's prefix
 ./moerx -s bottom work # show the session status line at the bottom
-./moerx --help      # all shortcuts
+./moerx --help         # all shortcuts
 ```
 
 Detach with `Ctrl-A d`. Run `moerx` again to reattach.
