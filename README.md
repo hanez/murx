@@ -45,6 +45,11 @@ option, restart the session server once so it understands the prefix setting.
   centred in its terminal, while a smaller client shows the top-left part.
   `Ctrl-A R` forces the session back to the current client's terminal size.
 - Panes run `$SHELL` as a login shell with `TERM=screen-256color`.
+  They inherit the launching process's umask, so builds keep their usual file
+  permissions. After upgrading from a version that forced `077`, restart the
+  session server to apply the fix. In an existing shell, `umask 022` restores
+  typical public file permissions for subsequent commands, including builds
+  published with `rsync -a`.
 - Window names show `hostname:program` for the foreground program in their
   active pane (for example `laptop:zsh` or `laptop:vim`), refreshed
   every second, including in inactive windows. When a program exits, the name

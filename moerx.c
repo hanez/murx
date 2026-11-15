@@ -3415,8 +3415,6 @@ static void server_start(const char *path, const char *name, int readyfd) {
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGQUIT, &sa, NULL);
 
-    umask(077);
-
     int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (lfd < 0) {
         server_fail(readyfd, "socket", errno);
@@ -3427,10 +3425,15 @@ static void server_start(const char *path, const char *name, int readyfd) {
     saun.sun_family = AF_UNIX;
     snprintf(saun.sun_path, sizeof saun.sun_path, "%s", path);
     unlink(path);
-    if (bind(lfd, (struct sockaddr *)&saun, sizeof saun) < 0) {
-        int err = errno;
+    /* Protect the socket without imposing private file permissions on pane
+       shells and their build output (rsync -a preserves those permissions). */
+    mode_t saved_umask = umask(077);
+    int bound = bind(lfd, (struct sockaddr *)&saun, sizeof saun);
+    int bind_err = errno;
+    umask(saved_umask);
+    if (bound < 0) {
         close(lfd);
-        server_fail(readyfd, "bind", err);
+        server_fail(readyfd, "bind", bind_err);
         _exit(1);
     }
     if (listen(lfd, 16) < 0) {
