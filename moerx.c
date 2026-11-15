@@ -3365,7 +3365,9 @@ static void run_server(Session *s) {
         }
     }
 
-    server_notify_all(s, "[server exited]");
+    char msg[128];
+    snprintf(msg, sizeof msg, "[moerx: session \"%s\" server exited]", s->name);
+    server_notify_all(s, msg);
     free(panes);
 }
 
