@@ -5,11 +5,13 @@ dependencies.
 
 ```sh
 make -B CC=clang
-./moerx                # session "0"
-./moerx work           # separate named session
-./moerx -p x work      # use Ctrl-X as this client's prefix
-./moerx -s bottom work # show the session status line at the bottom
-./moerx --help         # all shortcuts
+./moerx                      # session "0"
+./moerx work                 # separate named session
+./moerx -p x work            # use Ctrl-X as this client's prefix
+./moerx --prefix x work      # same as -p x
+./moerx -s bottom work       # show the session status line at the bottom
+./moerx --status bottom work # same as -s bottom
+./moerx --help               # all shortcuts
 ```
 
 Detach with `Ctrl-A d`. Run `moerx` again to reattach.
@@ -17,9 +19,10 @@ Detach with `Ctrl-A d`. Run `moerx` again to reattach.
 Every shortcut is a chain that starts with the prefix (by default `Ctrl-A`):
 press it, release it, then press the rest of the chain.
 
-Use `-p x` or `--prefix x` to choose Ctrl-X instead. Letters
-`a` through `z` select Ctrl-A through Ctrl-Z, case-insensitively. The choice applies to
-this attached client; use the option again when reattaching, or set a shell
+Use `-p x` or `--prefix x` to choose Ctrl-X instead; `--prefix` is the long
+form of `-p`. Letters `a` through `z` select Ctrl-A through Ctrl-Z,
+case-insensitively. The choice applies to this attached client; use the option
+again when reattaching, or set a shell
 alias such as `alias moerx='moerx -p x'`. Clients attached to the same session
 can choose different prefixes.
 
