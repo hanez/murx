@@ -311,6 +311,9 @@ struct Pane {
     uint32_t u8_cp;
 
     char title[128];
+    pid_t title_pgrp;       /* foreground job that supplied the OSC title */
+    char remote_title[128];
+    pid_t remote_title_pgrp;
     int id;
     int tty_fd;
 
@@ -816,6 +819,8 @@ static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
     }
 }
 
+static int pane_remote_title(Pane *p, pid_t pid);
+
 static void em_osc_done(Pane *p) {
     p->seq[p->seqlen] = '\0';
     if (p->seqlen > 2 && (p->seq[0] == '0' || p->seq[0] == '2') && p->seq[1] == ';') {
@@ -826,6 +831,14 @@ static void em_osc_done(Pane *p) {
         p->title[n] = '\0';
         for (size_t i = 0; i < n; i++) {
             if ((unsigned char)p->title[i] < 32) p->title[i] = ' ';
+        }
+        p->title_pgrp = tcgetpgrp(p->fd);
+        if (p->title_pgrp <= 0) p->title_pgrp = tcgetpgrp(p->tty_fd);
+        /* Save structured remote names as they arrive, even when a program
+           immediately follows them with its own unstructured OSC title. */
+        if (p->title_pgrp > 0 && pane_remote_title(p, p->title_pgrp)) {
+            snprintf(p->remote_title, sizeof p->remote_title, "%s", p->title);
+            p->remote_title_pgrp = p->title_pgrp;
         }
     }
     p->seqlen = 0;
@@ -1060,8 +1073,25 @@ struct Session {
     long long last_name_check;
 };
 
+/* Remote jobs are invisible locally. Accept host:program OSC titles from
+   the current ssh job; a previous job's title must not name a new connection. */
+static int pane_remote_title(Pane *p, pid_t pid) {
+    if (p->title_pgrp != pid) return 0;
+    const char *colon = strchr(p->title, ':');
+    if (!colon || colon == p->title || !colon[1]) return 0;
+    for (const char *s = p->title; s < colon; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (!isalnum(c) && c != '.' && c != '-' && c != '_') return 0;
+    }
+    for (const char *s = colon + 1; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c <= 32 || c == 127 || c == '/' || c == ':') return 0;
+    }
+    return 1;
+}
+
 /* Use the active pane's foreground process group, so returning from a job
-   restores the shell name. Titles set with OSC are independent of this. */
+   restores the shell name. */
 static int window_update_name(Window *w) {
     Pane *p = w->active;
     if (!p || !p->alive) return 0;
@@ -1099,7 +1129,19 @@ static int window_update_name(Window *w) {
         if ((unsigned char)*s < 32 || (unsigned char)*s == 127) *s = '?';
     }
     char next[sizeof w->name];
-    snprintf(next, sizeof next, "%.*s", (int)sizeof next - 1, base);
+    if (strcmp(base, "ssh") == 0 && p->remote_title_pgrp == pid && p->remote_title[0]) {
+        snprintf(next, sizeof next, "%s", p->remote_title);
+    } else {
+        char host[256];
+        if (gethostname(host, sizeof host) < 0) snprintf(host, sizeof host, "localhost");
+        host[sizeof host - 1] = '\0';
+        char *dot = strchr(host, '.');
+        if (dot) *dot = '\0';
+        for (char *s = host; *s; s++) {
+            if ((unsigned char)*s < 32 || (unsigned char)*s == 127) *s = '?';
+        }
+        snprintf(next, sizeof next, "%.63s:%.63s", host, base);
+    }
     if (strcmp(w->name, next) == 0) return 0;
     snprintf(w->name, sizeof w->name, "%s", next);
     return 1;

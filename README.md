@@ -29,10 +29,53 @@ sent straight to the pane.
   centred in its terminal, while a smaller client shows the top-left part.
   `Ctrl-A R` forces the session back to the current client's terminal size.
 - Panes run `$SHELL` as a login shell with `TERM=screen-256color`.
-- Window names follow the foreground program in their active pane, refreshed
+- Window names show `hostname:program` for the foreground program in their
+  active pane (for example `laptop:zsh` or `laptop:vim`), refreshed
   every second, including in inactive windows. When a program exits, the name
   returns to the shell. For pipelines, the foreground process group leader
   supplies the name. Linux uses `/proc`; other systems use `ps`.
+
+## SSH window names
+
+While an SSH pane is active, the outer terminal's window title shows
+`[moerx] remote-hostname:program`, for example `[moerx] server:vim`.
+The moerx window list and pane title also show `server:vim`. Starting another
+remote program updates the title, and returning to the prompt shows the
+remote shell name, for example `[moerx] server:zsh`.
+The remote shell must send an OSC 0 or OSC 2 terminal title in
+that format: SSH itself does not report the remote foreground program.
+Without a matching title, the window name remains `local-hostname:ssh`.
+Names refresh within one second; disconnecting restores the local hostname
+and shell name in the terminal title and window list.
+
+For **zsh**, add this to `~/.zshrc` on the **remote host**:
+
+```zsh
+if [[ -n $SSH_CONNECTION ]]; then
+    autoload -Uz add-zsh-hook
+    moerx_ssh_title() {
+        local program=${1:t}
+        printf '\033]2;%s:%s\007' "${HOST%%.*}" "$program"
+    }
+    moerx_ssh_preexec() {
+        local -a words
+        words=(${(z)1})
+        moerx_ssh_title "${(Q)words[1]}"
+    }
+    moerx_ssh_precmd() { moerx_ssh_title zsh; }
+    add-zsh-hook preexec moerx_ssh_preexec
+    add-zsh-hook precmd moerx_ssh_precmd
+fi
+```
+
+This reports the command launched by the shell (the first command for a
+pipeline), then `hostname:zsh` at the prompt. moerx retains the latest
+`hostname:program` for that SSH job when programs send other terminal titles,
+so these cannot reset the window name to `local-hostname:ssh`.
+Other shells can use equivalent
+hooks sending `printf '\033]2;server:vim\007'`; use a hostname containing only
+letters, digits, dots, underscores or hyphens, and a program basename without
+spaces or colons. With splits, the window follows its active pane.
 
 ## Keys
 
@@ -91,7 +134,8 @@ Colours are written to the outer terminal in 256-colour form (`38;5;n` /
 unless the outer terminal advertises `COLORTERM=truecolor` and is not
 screen/tmux/linux.
 
-The title is set to `[moerx] <window name>`.
+The terminal window title is set to `[moerx] hostname:program`, following the
+active moerx window. Hostnames use their short form (before the first dot).
 
 ## Deliberate limitations
 
