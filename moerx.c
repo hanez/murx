@@ -2184,7 +2184,7 @@ static void draw_frame(Session *s, Client *c, Grid *scr) {
                      s->cur && s->cur->active && s->cur->active->app_cursor;
     buf_puts(&b, app_cursor ? "\x1b[?1h" : "\x1b[?1l");
     buf_puts(&b, "\x1b[0m");
-    if (vis && (cy == 0 || cx >= vw || cy >= vh)) vis = 0;
+    if (vis && (cx >= vw || cy >= vh)) vis = 0;
     if (vis) {
         buf_printf(&b, "\x1b[%d;%dH\x1b[?25h", cy + 1 + offy, cx + 1 + offx);
     } else {
