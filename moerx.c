@@ -1707,12 +1707,8 @@ static void draw_labels(Grid *g, Layout *l, Window *win) {
     draw_labels(g, l->b, win);
 }
 
-static void status_right_draw(Grid *g, int rx, int y, const char *host,
-                              const char *clock) {
-    int px = draw_text(g, rx, y, " [", P_STATUS, DEFAULT_COLOR, 0);
-    px = draw_text(g, px, y, host, P_ACCENT, DEFAULT_COLOR, 0);
-    px = draw_text(g, px, y, "]", P_STATUS, DEFAULT_COLOR, 0);
-    px = draw_text(g, px, y, " ", P_STATUS, DEFAULT_COLOR, 0);
+static void status_right_draw(Grid *g, int rx, int y, const char *clock) {
+    int px = draw_text(g, rx, y, " ", P_STATUS, DEFAULT_COLOR, 0);
     px = draw_text(g, px, y, clock, P_STATUS, DEFAULT_COLOR, 0);
     draw_text(g, px, y, " ", P_STATUS, DEFAULT_COLOR, 0);
 }
@@ -1737,26 +1733,17 @@ static void status_draw(Grid *g, Session *s, Client *c) {
     int left_len = x;
     if (left_len > 20) left_len = 20;
 
-    char host[256];
-    if (gethostname(host, sizeof host) < 0) snprintf(host, sizeof host, "localhost");
-    host[sizeof host - 1] = '\0';
-    char *dot = strchr(host, '.');
-    if (dot) *dot = '\0';
-
     time_t t = time(NULL);
     struct tm tmv;
     localtime_r(&t, &tmv);
     char clockbuf[32];
     strftime(clockbuf, sizeof clockbuf, "%H:%M:%S", &tmv);
 
-    char right[256];
-    snprintf(right, sizeof right, " [%s] %s ", host, clockbuf);
-    if ((int)strlen(right) > 50) right[50] = '\0';
-    int right_len = text_width(right);
+    int right_len = text_width(clockbuf) + 2;
     if (right_len > s->w) right_len = s->w;
     int rx = s->w - right_len;
     if (rx < 0) rx = 0;
-    status_right_draw(g, rx, y, host, clockbuf);
+    status_right_draw(g, rx, y, clockbuf);
 
     int total = 0;
     for (Window *w = s->windows; w; w = w->next) {
@@ -1814,8 +1801,8 @@ static void status_draw(Grid *g, Session *s, Client *c) {
         }
     }
 
-    /* keep host/time visible even if a message or window list is long */
-    status_right_draw(g, rx, y, host, clockbuf);
+    /* keep the clock visible even if a message or window list is long */
+    status_right_draw(g, rx, y, clockbuf);
 }
 
 static void menu_draw(Grid *g, Session *s, Client *c) {
