@@ -13,6 +13,7 @@ make -B CC=clang
 ./moerx --status bottom work # same as -s bottom
 ./moerx --no-cwd work        # show [moerx] instead of the directory
 ./moerx --no-clock work      # hide the status bar clock
+./moerx --no-clock --no-moerx work # hide clock and [moerx]
 ./moerx --help               # all shortcuts
 ```
 
@@ -42,7 +43,8 @@ position. Prompts and messages follow the status line. Restart servers from
 older versions once before using this option.
 
 Use `--no-cwd` to show `[moerx]` on the left of the status bar instead of the
-current directory, and `--no-clock` to hide the clock on the right. These
+current directory, and `--no-clock` to hide the clock on the right. Use
+`--no-moerx` to hide `[moerx]` when using `--no-clock` (and `--no-cwd`). These
 options apply when starting a new session.
 
 ## What it does
