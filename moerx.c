@@ -1127,6 +1127,7 @@ struct Session {
     int w, h;
     int status_bottom;
     int show_cwd;
+    int show_clock;
     Window *windows;
     Window *cur, *last;
     int nwin;
@@ -1797,17 +1798,21 @@ static void status_draw(Grid *g, Session *s, Client *c) {
         scr_put(g, x, y, ' ', P_STATUS, DEFAULT_COLOR, 0);
     }
 
-    time_t t = time(NULL);
-    struct tm tmv;
-    localtime_r(&t, &tmv);
     char clockbuf[32];
-    strftime(clockbuf, sizeof clockbuf, "%H:%M:%S", &tmv);
-
-    int right_len = text_width(clockbuf) + 2;
-    if (right_len > s->w) right_len = s->w;
-    int rx = s->w - right_len;
-    if (rx < 0) rx = 0;
-    status_right_draw(g, rx, y, clockbuf);
+    clockbuf[0] = '\0';
+    int right_len = 0;
+    int rx = s->w;
+    if (s->show_clock) {
+        time_t t = time(NULL);
+        struct tm tmv;
+        localtime_r(&t, &tmv);
+        strftime(clockbuf, sizeof clockbuf, "%H:%M:%S", &tmv);
+        right_len = text_width(clockbuf) + 2;
+        if (right_len > s->w) right_len = s->w;
+        rx = s->w - right_len;
+        if (rx < 0) rx = 0;
+        status_right_draw(g, rx, y, clockbuf);
+    }
 
     int total = 0;
     for (Window *w = s->windows; w; w = w->next) {
@@ -1877,8 +1882,10 @@ static void status_draw(Grid *g, Session *s, Client *c) {
         }
     }
 
-    /* keep the clock visible even if a message or window list is long */
-    status_right_draw(g, rx, y, clockbuf);
+    if (s->show_clock) {
+        /* keep the clock visible even if a message or window list is long */
+        status_right_draw(g, rx, y, clockbuf);
+    }
 }
 
 static void menu_draw(Grid *g, Session *s, Client *c) {
@@ -3483,7 +3490,7 @@ static void server_fail(int readyfd, const char *stage, int err) {
     close(readyfd);
 }
 
-static void server_start(const char *path, const char *name, int readyfd, int show_cwd) {
+static void server_start(const char *path, const char *name, int readyfd, int show_cwd, int show_clock) {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
     signal(SIGCHLD, SIG_DFL);
@@ -3532,6 +3539,7 @@ static void server_start(const char *path, const char *name, int readyfd, int sh
     s->h = 24;
     s->running = 1;
     s->show_cwd = show_cwd;
+    s->show_clock = show_clock;
     s->last_status = now_ms();
 
     Window *w = window_new(s, NULL);
@@ -3611,7 +3619,7 @@ static int ensure_socket_dir(void) {
     return 0;
 }
 
-static int spawn_server(const char *path, const char *name, int show_cwd) {
+static int spawn_server(const char *path, const char *name, int show_cwd, int show_clock) {
     if (ensure_socket_dir() < 0) return -1;
     char dir[PATH_MAX], lockpath[PATH_MAX + 64];
     socket_dir(dir, sizeof dir);
@@ -3659,7 +3667,7 @@ static int spawn_server(const char *path, const char *name, int show_cwd) {
             if (dn > 2) close(dn);
         }
         close(lock);
-        server_start(path, name, p[1], show_cwd);
+        server_start(path, name, p[1], show_cwd, show_clock);
         _exit(1);
     }
     close(p[1]);
@@ -3916,7 +3924,7 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
 
 static void print_help(FILE *out) {
     fprintf(out,
-        "usage: moerx [-p letter] [-s top|bottom] [--no-cwd] [session]\n"
+        "usage: moerx [-p letter] [-s top|bottom] [--no-cwd] [--no-clock] [session]\n"
         "       moerx -h | --help\n"
         "\n"
         "Attach to a running session, or start it if it is not running.\n"
@@ -3926,6 +3934,7 @@ static void print_help(FILE *out) {
         "New sessions default to top; an explicit choice updates all attached clients.\n"
         "Without -s, keep the session position.\n"
         "Use --no-cwd to hide the current directory in the status bar.\n"
+        "Use --no-clock to hide the clock in the status bar.\n"
         "\n"
         "Use -p x (or --prefix x) to choose Ctrl-X as this client's prefix.\n"
         "Letters a through z are supported (case-insensitive); the default is a (Ctrl-A).\n"
@@ -4001,6 +4010,7 @@ int main(int argc, char **argv) {
     unsigned char prefix = DEFAULT_PREFIX;
     int status = 0;
     int show_cwd = 1;
+    int show_clock = 1;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1]) {
         const char *option = argv[argi++];
         if (strcmp(option, "--") == 0) break;
@@ -4010,6 +4020,8 @@ int main(int argc, char **argv) {
         }
         if (strcmp(option, "--no-cwd") == 0) {
             show_cwd = 0;
+        } else if (strcmp(option, "--no-clock") == 0) {
+            show_clock = 0;
         } else if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
             if (argi >= argc || !parse_prefix(argv[argi], &prefix)) {
                 fprintf(stderr, "moerx: %s requires a letter from a through z\n", option);
@@ -4046,7 +4058,7 @@ int main(int argc, char **argv) {
     make_socket_path(name, path, sizeof path);
 
     int fd = connect_session(path);
-    if (fd < 0) fd = spawn_server(path, name, show_cwd);
+    if (fd < 0) fd = spawn_server(path, name, show_cwd, show_clock);
     if (fd < 0) {
         fprintf(stderr, "moerx: cannot start or attach session '%s': %s\n",
                 name, strerror(errno));

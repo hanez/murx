@@ -11,6 +11,8 @@ make -B CC=clang
 ./moerx --prefix x work      # same as -p x
 ./moerx -s bottom work       # show the session status line at the bottom
 ./moerx --status bottom work # same as -s bottom
+./moerx --no-cwd work        # show [moerx] instead of the directory
+./moerx --no-clock work      # hide the status bar clock
 ./moerx --help               # all shortcuts
 ```
 
@@ -38,6 +40,10 @@ line position. New sessions default to top. An explicit choice also updates an
 existing session for all attached clients; omitting the option preserves its
 position. Prompts and messages follow the status line. Restart servers from
 older versions once before using this option.
+
+Use `--no-cwd` to show `[moerx]` on the left of the status bar instead of the
+current directory, and `--no-clock` to hide the clock on the right. These
+options apply when starting a new session.
 
 ## What it does
 
