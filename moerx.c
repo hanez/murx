@@ -52,7 +52,6 @@
 #include <time.h>
 #include <unistd.h>
 #include <wchar.h>
-#include <wctype.h>
 
 #define DEFAULT_PREFIX 0x01
 
