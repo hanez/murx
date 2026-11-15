@@ -3030,7 +3030,6 @@ static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t 
 /* server                                                             */
 /* ------------------------------------------------------------------ */
 
-static Session *g_session;
 static volatile sig_atomic_t g_term;
 
 static void term_handler(int sig) {
@@ -3392,8 +3391,6 @@ static void server_cleanup(Session *s) {
     unlink(s->sock_path);
 }
 
-static char g_spawn_err[200];
-
 /* Tell the spawning client why the server could not come up. */
 static void server_fail(int readyfd, const char *stage, int err) {
     if (readyfd < 0) return;
@@ -3453,7 +3450,6 @@ static void server_start(const char *path, const char *name, int readyfd) {
     s->h = 24;
     s->running = 1;
     s->last_status = now_ms();
-    g_session = s;
 
     Window *w = window_new(s, NULL);
     if (!w) {
