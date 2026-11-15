@@ -114,6 +114,7 @@ Prefix is `Ctrl-A`. Every shortcut below is `Ctrl-A`, then the key(s) shown.
 | `Ctrl-A o` | next pane |
 | `Ctrl-A Ctrl-H` `Ctrl-A Ctrl-J` `Ctrl-A Ctrl-K` `Ctrl-A Ctrl-L` | resize pane (8/5/5/8) |
 | `Ctrl-A x`, `Ctrl-A Ctrl-X` | lock the client |
+| `Ctrl-A Page Up`, `Ctrl-A [` | enter scrollback (Page Up also scrolls one page) |
 | `Ctrl-A K` | kill pane (confirm) |
 | `Ctrl-A &` | kill window (confirm) |
 | `Ctrl-A \` | kill server (confirm) |
@@ -125,6 +126,21 @@ Prefix is `Ctrl-A`. Every shortcut below is `Ctrl-A`, then the key(s) shown.
 Two bindings worth noting: `Ctrl-A Ctrl-H`/`Ctrl-A Ctrl-L` resize the pane
 (they do not switch windows), and `Ctrl-A k` selects the pane above while
 `Ctrl-A K` kills it.
+
+## Scrollback
+
+Press `Ctrl-A`, then `Page Up` to scroll back in the active pane. Use
+`Page Up` and `Page Down` without the prefix to move through history.
+`Ctrl-A [` opens scrollback at the current screen. Press `q`, Escape,
+Enter or Ctrl-C to return to live output.
+
+Each pane keeps up to 2,000 lines of normal screen history. The view is frozen
+while browsing; programs keep running and new output continues to be saved.
+Scrollback is private to each client. Changing the active pane or window closes
+it. Alternate-screen programs such as editors do not add history; opening
+scrollback there shows only their current screen. History is kept in memory,
+retains colors, and is clipped or padded to the pane width without reflow.
+Restart an existing session server after upgrading to enable this feature.
 
 ## Colors
 
@@ -158,8 +174,8 @@ active moerx window. Hostnames use their short form (before the first dot).
 This is "very basic" by design:
 
 - No config file, no command prompt, no scripting, no plugins.
-- No scrollback / copy mode (`[` does nothing), no zoom, no activity
-  monitoring, no clock mode.
+- No text selection or copying in scrollback, no zoom, no activity monitoring,
+  no clock mode.
 - The lock screen is a cosmetic client lock: press Enter to unlock. It is not a
   password lock.
 - Mouse reporting is not negotiated with the outer terminal.

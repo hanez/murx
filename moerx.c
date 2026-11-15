@@ -277,6 +277,8 @@ typedef enum {
     PS_DCS_ESC
 } ParseState;
 
+#define HISTORY_LINES 2000
+
 typedef struct Pane Pane;
 
 struct Pane {
@@ -290,6 +292,8 @@ struct Pane {
     Grid main_grid, alt_grid;
     Grid *grid;
     int on_alt;
+    Grid *history;         /* ring of rows, retaining their original widths */
+    int history_start, history_count;
 
     int cx, cy;
     int wrap_pending;
@@ -424,6 +428,19 @@ static void em_scroll_up(Pane *p, int n) {
     Grid *g = p->grid;
     if (n < 1) n = 1;
     if (n > p->scroll_bot - p->scroll_top + 1) n = p->scroll_bot - p->scroll_top + 1;
+    /* Only normal full-screen scrolling contributes shell history. */
+    if (!p->on_alt && p->scroll_top == 0 && p->scroll_bot == g->h - 1) {
+        if (!p->history) p->history = xcalloc(HISTORY_LINES, sizeof(Grid));
+        for (int y = 0; y < n; y++) {
+            int slot = (p->history_start + p->history_count) % HISTORY_LINES;
+            if (p->history_count == HISTORY_LINES) {
+                grid_free(&p->history[slot]);
+                p->history_start = (p->history_start + 1) % HISTORY_LINES;
+            } else p->history_count++;
+            grid_init(&p->history[slot], g->w, 1);
+            memcpy(p->history[slot].c, &g->c[y * g->w], (size_t)g->w * sizeof(Cell));
+        }
+    }
     for (int y = p->scroll_top; y <= p->scroll_bot - n; y++) {
         memcpy(&g->c[y * g->w], &g->c[(y + n) * g->w], (size_t)g->w * sizeof(Cell));
     }
@@ -1029,6 +1046,7 @@ struct Client {
     int truecolor;
     unsigned char in[16384];
     size_t inlen;
+    long long escape_since;
     unsigned char net[65536];
     size_t netlen;
 
@@ -1039,11 +1057,15 @@ struct Client {
     int prefix_pending;
     unsigned char prefix;
 
-    int mode;              /* 0 none, 1 prompt, 2 menu, 3 confirm */
+    int mode;              /* 0 none, 1 prompt, 2 menu, 3 confirm, 4 scrollback */
     int prompt_kind;       /* 1 rename window, 2 choose window */
     char prompt[160];
     int prompt_len;
     int prompt_label_len;
+
+    Grid backscroll;       /* private frozen history and screen snapshot */
+    Pane *backscroll_pane;
+    int backscroll_offset;
 
     int menu_sel;
     int confirm_action;    /* 1 kill pane, 2 kill server */
@@ -1191,6 +1213,10 @@ static void pane_free(Pane *p) {
     if (p->pid > 0) kill(p->pid, SIGHUP);
     grid_free(&p->main_grid);
     grid_free(&p->alt_grid);
+    if (p->history) {
+        for (int i = 0; i < HISTORY_LINES; i++) grid_free(&p->history[i]);
+        free(p->history);
+    }
     free(p);
 }
 
@@ -1755,7 +1781,13 @@ static void status_draw(Grid *g, Session *s, Client *c) {
         if (wx >= need) break;
     }
 
+    char scroll_msg[128];
     const char *overlay = NULL;
+    if (c->mode == 4) {
+        snprintf(scroll_msg, sizeof scroll_msg, "Scrollback [%d] PgUp/PgDn, q/Esc exits",
+                 c->backscroll_offset);
+        overlay = scroll_msg;
+    }
     if (c->mode == 1 || c->mode == 3) overlay = c->prompt;
     else if (c->msg[0] && c->msg_until > now_ms()) overlay = c->msg;
     if (overlay) {
@@ -1820,6 +1852,10 @@ static void menu_draw(Grid *g, Session *s, Client *c) {
 }
 
 static void compose(Session *s, Client *c, Grid *out) {
+    if (c->mode == 4 && (!s->cur || s->cur->active != c->backscroll_pane)) {
+        c->mode = 0;
+        grid_free(&c->backscroll);
+    }
     grid_init(out, s->w, s->h);
     grid_clear(out, DEFAULT_COLOR);
     status_draw(out, s, c);
@@ -1832,6 +1868,21 @@ static void compose(Session *s, Client *c, Grid *out) {
         border_render(out, mask);
         draw_labels(out, s->cur->root, s->cur);
         free(mask);
+    }
+    if (c->mode == 4 && s->cur && s->cur->active) {
+        Pane *p = s->cur->active;
+        int top = c->backscroll.h - p->h - c->backscroll_offset;
+        for (int y = 0; y < p->h; y++) {
+            for (int x = 0; x < p->w; x++) {
+                Cell *src = grid_at(&c->backscroll, x, top + y);
+                Cell *dst = grid_at(out, p->x + x, p->y + y);
+                if (dst) {
+                    *dst = src ? *src : blank_cell();
+                    if (dst->ch == WIDE_CONT && x == 0) *dst = blank_cell();
+                    if (cp_width(dst->ch) == 2 && x == p->w - 1) *dst = blank_cell();
+                }
+            }
+        }
     }
     if (c->mode == 2) menu_draw(out, s, c);
 }
@@ -2477,6 +2528,8 @@ static void rename_active_window(Session *s, const char *name) {
 #define K_RIGHT 0x1003
 #define K_LEFT  0x1004
 #define K_BTAB  0x1005
+#define K_PGUP  0x1006
+#define K_PGDN  0x1007
 
 static void client_invalidate(Client *c) {
     if (c->prev_valid) {
@@ -2573,8 +2626,65 @@ static void apply_confirm(Client *c, Session *s) {
     }
 }
 
+static void backscroll_start(Client *c, Session *s, int page_up) {
+    Pane *p = s->cur ? s->cur->active : NULL;
+    if (!p) return;
+    int count = p->on_alt ? 0 : p->history_count;
+    grid_free(&c->backscroll);
+    grid_init(&c->backscroll, p->grid->w, count + p->grid->h);
+    for (int y = 0; y < count + p->grid->h; y++) {
+        Grid *row = y < count ? &p->history[(p->history_start + y) % HISTORY_LINES] : p->grid;
+        int sy = y < count ? 0 : y - count;
+        int width = row->w < c->backscroll.w ? row->w : c->backscroll.w;
+        memcpy(&c->backscroll.c[y * c->backscroll.w], &row->c[sy * row->w],
+               (size_t)width * sizeof(Cell));
+        Cell *last = grid_at(&c->backscroll, c->backscroll.w - 1, y);
+        if (cp_width(last->ch) == 2) *last = blank_cell();
+    }
+    c->backscroll_pane = p;
+    c->backscroll_offset = page_up ? p->h : 0;
+    if (c->backscroll_offset > count) c->backscroll_offset = count;
+    c->mode = 4;
+}
+
+/* Return zero for an incomplete page-key sequence. */
+static size_t backscroll_key(Client *c, Session *s, const unsigned char *buf, size_t n) {
+    if (!s->cur || s->cur->active != c->backscroll_pane) {
+        c->mode = 0;
+        grid_free(&c->backscroll);
+        return 1;
+    }
+    if (buf[0] == 27 && n == 1) return 0;
+    if (buf[0] == 'q' || buf[0] == 3 || buf[0] == '\r' || buf[0] == '\n' ||
+        (buf[0] == 27 && (n == 1 || buf[1] != '['))) {
+        c->mode = 0;
+        grid_free(&c->backscroll);
+        return 1;
+    }
+    if (buf[0] == 27 && n >= 2 && buf[1] == '[') {
+        size_t used = 2;
+        while (used < n && !(buf[used] >= 0x40 && buf[used] <= 0x7e)) used++;
+        if (used == n) return 0;
+        used++;
+        if (used == 4 && buf[3] == '~' && (buf[2] == '5' || buf[2] == '6')) {
+            int height = s->cur->active->h;
+            int max = c->backscroll.h - height;
+            if (max < 0) max = 0;
+            c->backscroll_offset += buf[2] == '5' ? height : -height;
+            if (c->backscroll_offset < 0) c->backscroll_offset = 0;
+            if (c->backscroll_offset > max) c->backscroll_offset = max;
+        }
+        return used;
+    }
+    return 1;
+}
+
 static void prefix_command(Client *c, Session *s, int key) {
     switch (key) {
+    case '[':
+    case K_PGUP:
+        backscroll_start(c, s, key == K_PGUP);
+        break;
     case 'a':
         if (s->cur && s->cur->active) {
             unsigned char b = c->prefix;
@@ -2711,10 +2821,8 @@ static int handle_prefix_key(Client *c, Session *s, const unsigned char *buf, si
     int key = b;
     int used = 1;
     if (b == 0x1b) {
-        if (n < 2) {
-            key = 0;
-            used = 1;
-        } else if (buf[1] == '[' || buf[1] == 'O') {
+        if (n < 2) return 0;
+        else if (buf[1] == '[' || buf[1] == 'O') {
             if (n < 3) return 0;
             switch (buf[2]) {
             case 'A': key = K_UP; break;
@@ -2725,6 +2833,11 @@ static int handle_prefix_key(Client *c, Session *s, const unsigned char *buf, si
             default: key = 0; break;
             }
             used = 3;
+            if (buf[1] == '[' && (buf[2] == '5' || buf[2] == '6')) {
+                if (n < 4) return 0;
+                key = buf[3] == '~' ? (buf[2] == '5' ? K_PGUP : K_PGDN) : 0;
+                used = 4;
+            }
         } else {
             key = 0;
             used = 1;
@@ -2839,6 +2952,17 @@ static void menu_key(Client *c, Session *s, const unsigned char *buf, size_t n, 
 
 static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t n) {
     if (n > sizeof c->in - c->inlen) n = sizeof c->in - c->inlen;
+    if (n == 0 && c->inlen == 1 && c->in[0] == 27 && c->escape_since &&
+        now_ms() - c->escape_since >= 100) {
+        if (c->mode == 4) {
+            c->mode = 0;
+            grid_free(&c->backscroll);
+        }
+        c->prefix_pending = 0;
+        c->inlen = 0;
+        c->escape_since = 0;
+        return;
+    }
     if (n == 0) return;
     memcpy(c->in + c->inlen, buf, n);
     c->inlen += n;
@@ -2853,6 +2977,12 @@ static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t 
             continue;
         }
         if (c->dead) break;
+        if (c->mode == 4) {
+            size_t used = backscroll_key(c, s, p, left);
+            if (used == 0) break;
+            i += used;
+            continue;
+        }
         if (c->mode == 1) {
             size_t used = 0;
             prompt_key(c, s, p, left, &used);
@@ -2892,6 +3022,9 @@ static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t 
         memmove(c->in, c->in + i, c->inlen - i);
         c->inlen -= i;
     }
+    if (c->inlen == 1 && c->in[0] == 27 && (c->mode == 4 || c->prefix_pending)) {
+        if (!c->escape_since) c->escape_since = now_ms();
+    } else c->escape_since = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2977,6 +3110,7 @@ static void client_remove(Session *s, Client *c) {
     else s->clients = c->next;
     if (c->fd >= 0) close(c->fd);
     if (c->prev_valid) grid_free(&c->prev);
+    grid_free(&c->backscroll);
     free(c);
     session_recalc_size(s);
     invalidate_clients(s);
@@ -3189,6 +3323,13 @@ static void run_server(Session *s) {
         free(pfds);
         free(cmap);
 
+        for (Client *it = s->clients; it; it = it->next) {
+            if (it->escape_since && now_ms() - it->escape_since >= 100) {
+                client_feed(it, s, NULL, 0);
+                dirty = 1;
+            }
+        }
+
         /* Reap dead clients before drawing so a removed client's size change
            is reflected in this frame instead of waiting for the next event. */
         Client *c = s->clients;
@@ -3236,6 +3377,7 @@ static void server_cleanup(Session *s) {
         Client *next = c->next;
         if (c->fd >= 0) close(c->fd);
         if (c->prev_valid) grid_free(&c->prev);
+        grid_free(&c->backscroll);
         free(c);
         c = next;
     }
@@ -3743,6 +3885,7 @@ static void print_help(FILE *out) {
         "  Ctrl-A Ctrl-K         resize pane up\n"
         "  Ctrl-A Ctrl-L         resize pane right\n"
         "  Ctrl-A K              kill pane (confirm)\n"
+        "  Ctrl-A PageUp, [      scrollback (PgUp/PgDn; q/Escape exits)\n"
         "\n"
         "Client and server\n"
         "  Ctrl-A a              send a literal Ctrl-A to the pane\n"
