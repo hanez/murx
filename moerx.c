@@ -1821,11 +1821,15 @@ static void status_draw(Grid *g, Session *s, Client *c) {
     int need = s->w - right_len;
     int start = need - total;
     int left_len = 0;
-    if (s->show_cwd) {
-        char cwd[PATH_MAX];
-        if (!status_cwd(s, cwd, sizeof cwd))
-            status_cwd_home(cwd, sizeof cwd);
-        left_len = status_cwd_draw(g, y, cwd, start);
+    {
+        char left[PATH_MAX];
+        if (s->show_cwd) {
+            if (!status_cwd(s, left, sizeof left))
+                status_cwd_home(left, sizeof left);
+        } else {
+            snprintf(left, sizeof left, "moerx");
+        }
+        left_len = status_cwd_draw(g, y, left, start);
         if (start < left_len) start = left_len;
     }
     if (start < 0) start = 0;
