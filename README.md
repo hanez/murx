@@ -66,11 +66,11 @@ older versions once before using this option.
   returns to the shell. For pipelines, the foreground process group leader
   supplies the name. Linux uses `/proc`; other systems use `ps`.
 
-## SSH window names
+## SSH window names and directories
 
 While an SSH pane is active, the outer terminal's window title shows
 `[moerx] remote-hostname:program`, for example `[moerx] server:vim`.
-The moerx window list and pane title also show `server:vim`. Starting another
+The moerx window list also shows `server:vim`. Starting another
 remote program updates the title, and returning to the prompt shows the
 remote shell name, for example `[moerx] server:zsh`.
 The remote shell must send an OSC 0 or OSC 2 terminal title in
@@ -87,6 +87,13 @@ if [[ -n $SSH_CONNECTION ]]; then
     moerx_ssh_title() {
         local program=${1:t}
         printf '\033]2;%s:%s\007' "${HOST%%.*}" "$program"
+        local directory=$PWD
+        if [[ $directory == "$HOME" ]]; then
+            directory='~'
+        elif [[ $directory == "$HOME/"* ]]; then
+            directory="~/${directory#"$HOME/"}"
+        fi
+        printf '\033]777;moerx-cwd;%s\007' "$directory"
     }
     moerx_ssh_preexec() {
         local -a words
@@ -103,6 +110,17 @@ This reports the command launched by the shell (the first command for a
 pipeline), then `hostname:zsh` at the prompt. moerx retains the latest
 `hostname:program` for that SSH job when programs send other terminal titles,
 so these cannot reset the window name to `local-hostname:ssh`.
+The hook also reports the remote working directory before each command and at
+each prompt, so the status bar follows remote `cd` commands and shows `~` for
+the remote home directory. Disconnecting restores the local path. Restart
+existing moerx servers and reload the remote shell configuration after upgrading.
+
+moerx accepts standard OSC 7 reports (`ESC ] 7 ; file://host/path BEL`) too,
+including percent-encoded paths. These display the reported absolute path;
+`OSC 777;moerx-cwd;path` accepts either an absolute path or a path starting with
+`~` and preserves that abbreviation. Reports belong to the foreground job
+that sent them, so an old SSH connection cannot override the local shell's path.
+
 Other shells can use equivalent
 hooks sending `printf '\033]2;server:vim\007'`; use a hostname containing only
 letters, digits, dots, underscores or hyphens, and a program basename without
@@ -170,7 +188,7 @@ Hard-coded:
   Paths in `$HOME` use `~`, for example `[~/code/moerx]`; `$HOME` itself
   appears as `[~]`. Long paths end in `...` to leave room for the window list and clock; the
   directory label is hidden when fewer than four columns remain. Remote SSH
-  directories are not available locally.
+  directories require a shell report; see [SSH window names and directories](#ssh-window-names-and-directories).
 - `HH:MM:SS` on the right in `colour12`, refreshed every second.
 - Window list right-aligned: current name `colour11`, other names `colour12`,
   separators/flags `colour14`.

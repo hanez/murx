@@ -308,7 +308,7 @@ struct Pane {
     Pen main_pen;
 
     ParseState pstate;
-    char seq[256];
+    char seq[PATH_MAX * 3 + 256];
     int seqlen;
 
     int u8_need, u8_have;
@@ -318,6 +318,8 @@ struct Pane {
     pid_t title_pgrp;       /* foreground job that supplied the OSC title */
     char remote_title[128];
     pid_t remote_title_pgrp;
+    char reported_cwd[PATH_MAX];
+    pid_t reported_cwd_pgrp;
     int id;
     int tty_fd;
 
@@ -840,8 +842,46 @@ static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
 
 static int pane_remote_title(Pane *p, pid_t pid);
 
+/* OSC 7 uses a percent-encoded file URI. The moerx-specific form also
+   accepts a shell-shortened path so remote $HOME can be displayed as ~. */
+static void em_osc_cwd(Pane *p) {
+    const char *path = NULL;
+    int uri = 0;
+    if (strncmp(p->seq, "7;file://", 9) == 0) {
+        path = strchr(p->seq + 9, '/');
+        uri = 1;
+    } else if (strncmp(p->seq, "777;moerx-cwd;", 14) == 0) {
+        path = p->seq + 14;
+    }
+    if (!path || (*path != '/' &&
+        !(*path == '~' && (!path[1] || path[1] == '/')))) return;
+    char cwd[PATH_MAX];
+    size_t n = 0;
+    while (*path) {
+        unsigned char ch = (unsigned char)*path++;
+        if (uri && ch == '%') {
+            if (!path[0] || !path[1]) return;
+            const char *digits = "0123456789abcdef";
+            const char *hi = strchr(digits, tolower((unsigned char)path[0]));
+            const char *lo = strchr(digits, tolower((unsigned char)path[1]));
+            if (!hi || !lo) return;
+            ch = (unsigned char)((hi - digits) * 16 + lo - digits);
+            path += 2;
+        }
+        if (ch < 32 || ch == 127 || n >= sizeof cwd - 1) return;
+        cwd[n++] = (char)ch;
+    }
+    cwd[n] = '\0';
+    pid_t pid = tcgetpgrp(p->fd);
+    if (pid <= 0) pid = tcgetpgrp(p->tty_fd);
+    if (pid <= 0) return;
+    snprintf(p->reported_cwd, sizeof p->reported_cwd, "%s", cwd);
+    p->reported_cwd_pgrp = pid;
+}
+
 static void em_osc_done(Pane *p) {
     p->seq[p->seqlen] = '\0';
+    em_osc_cwd(p);
     if (p->seqlen > 2 && (p->seq[0] == '0' || p->seq[0] == '2') && p->seq[1] == ';') {
         const char *t = p->seq + 2;
         size_t n = strlen(t);
@@ -1674,12 +1714,17 @@ static void status_right_draw(Grid *g, int rx, int y, const char *clock) {
 
 /* Linux exposes the foreground job's cwd; fall back to the pane shell,
    then the session's starting directory when it cannot be queried. */
-static void status_cwd(Session *s, char *out, size_t size) {
-#ifdef __linux__
+static int status_cwd(Session *s, char *out, size_t size) {
     Pane *p = s->cur ? s->cur->active : NULL;
     if (p) {
         pid_t foreground = tcgetpgrp(p->fd);
         if (foreground <= 0) foreground = tcgetpgrp(p->tty_fd);
+        if (foreground > 0 && p->reported_cwd_pgrp == foreground &&
+            p->reported_cwd[0]) {
+            snprintf(out, size, "%s", p->reported_cwd);
+            return 1;
+        }
+#ifdef __linux__
         pid_t pids[2] = { foreground, p->pid };
         for (int i = 0; i < 2; i++) {
             if (pids[i] <= 0) continue;
@@ -1691,12 +1736,13 @@ static void status_cwd(Session *s, char *out, size_t size) {
                 for (char *q = out; *q; q++) {
                     if ((unsigned char)*q < 32 || (unsigned char)*q == 127) *q = '?';
                 }
-                return;
+                return 0;
             }
         }
-    }
 #endif
+    }
     snprintf(out, size, "%s", s->cwd);
+    return 0;
 }
 
 /* Match a complete home-directory component, not a similarly named sibling. */
@@ -1774,8 +1820,8 @@ static void status_draw(Grid *g, Session *s, Client *c) {
     int need = s->w - right_len;
     int start = need - total;
     char cwd[PATH_MAX];
-    status_cwd(s, cwd, sizeof cwd);
-    status_cwd_home(cwd, sizeof cwd);
+    if (!status_cwd(s, cwd, sizeof cwd))
+        status_cwd_home(cwd, sizeof cwd);
     int left_len = status_cwd_draw(g, y, cwd, start);
     if (start < left_len) start = left_len;
     if (start < 0) start = 0;
