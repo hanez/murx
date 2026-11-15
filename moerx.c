@@ -1349,11 +1349,9 @@ static void layout_apply(Layout *l, int x, int y, int w, int h) {
 
     if (l->type == L_LEAF) {
         Pane *p = l->pane;
-        int ph = h - 1;
-        if (ph < 1) ph = 1;
         p->x = x;
-        p->y = y + 1;
-        pane_resize(p, w, ph);
+        p->y = y;
+        pane_resize(p, w, h);
         return;
     }
 
@@ -1369,13 +1367,15 @@ static void layout_apply(Layout *l, int x, int y, int w, int h) {
         layout_apply(l->a, x, y, aw, h);
         layout_apply(l->b, x + aw + 1, y, avail - aw, h);
     } else {
-        int ah = (int)(h * l->ratio + 0.5);
-        if (ah < 2) ah = 2;
-        if (ah > h - 2) ah = h - 2;
+        int avail = h - 1;
+        if (avail < 1) avail = 1;
+        int ah = (int)(avail * l->ratio + 0.5);
         if (ah < 1) ah = 1;
-        l->ratio = (double)ah / (double)h;
+        if (ah > avail - 1) ah = avail - 1;
+        if (ah < 1) ah = 1;
+        l->ratio = (double)ah / (double)avail;
         layout_apply(l->a, x, y, w, ah);
-        layout_apply(l->b, x, y + ah, w, h - ah);
+        layout_apply(l->b, x, y + ah + 1, w, avail - ah);
     }
 }
 
@@ -1435,7 +1435,7 @@ static Window *window_new(Session *s, const char *name) {
     if (dot) *dot = '\0';
 
     int pw = s->w > 0 ? s->w : 80;
-    int ph = s->h > 1 ? s->h - 2 : 23;
+    int ph = s->h > 1 ? s->h - 1 : 23;
     if (ph < 1) ph = 1;
     Pane *p = pane_new(s->cwd, pw, ph, host);
     if (!p) {
@@ -1550,7 +1550,7 @@ static int draw_text(Grid *g, int x, int y, const char *s, int fg, int bg, int a
 }
 
 /* Pane borders are thin box-drawing lines drawn over the terminal's own
- * background. The row above each pane doubles as its title bar. Borders are
+ * background. Borders occupy only the separators between panes and are
  * collected into a mask first so that crossing lines get the right junction
  * glyph no matter which pane is visited first. */
 #define B_UP    0x1
@@ -1565,18 +1565,7 @@ static void border_mark(uint8_t *m, int w, int h, int x, int y, uint8_t bits) {
 
 static void border_collect(uint8_t *m, int w, int h, Layout *l) {
     if (!l || l->w < 1 || l->h < 1) return;
-    if (l->type == L_LEAF) {
-        int y = l->y;
-        int end = l->x + l->w;
-        if (y < 0 || y >= h) return;
-        for (int x = l->x; x < end; x++) {
-            uint8_t bits = 0;
-            if (x > l->x || l->w == 1) bits |= B_LEFT;
-            if (x < end - 1 || l->w == 1) bits |= B_RIGHT;
-            border_mark(m, w, h, x, y, bits);
-        }
-        return;
-    }
+    if (l->type == L_LEAF) return;
     if (l->type == L_COLS) {
         int ax = l->x + l->a->w;
         int end = l->y + l->h;
@@ -1585,6 +1574,16 @@ static void border_collect(uint8_t *m, int w, int h, Layout *l) {
             if (y > l->y || l->h == 1) bits |= B_UP;
             if (y < end - 1 || l->h == 1) bits |= B_DOWN;
             border_mark(m, w, h, ax, y, bits);
+        }
+    }
+    else {
+        int ay = l->y + l->a->h;
+        int end = l->x + l->w;
+        for (int x = l->x; x < end; x++) {
+            uint8_t bits = 0;
+            if (x > l->x || l->w == 1) bits |= B_LEFT;
+            if (x < end - 1 || l->w == 1) bits |= B_RIGHT;
+            border_mark(m, w, h, x, ay, bits);
         }
     }
     border_collect(m, w, h, l->a);
@@ -1648,36 +1647,6 @@ static void border_render(Grid *g, const uint8_t *m) {
     }
 }
 
-static void draw_window_label(Grid *g, Window *win, Pane *p) {
-    int active = (p == win->active);
-    int fg1 = active ? C_WHITE : C_GREY;
-    int fg2 = active ? C_YELLOW : 3;
-    int fg3 = active ? C_BWHITE : C_BLUE;
-    int x = p->x;
-    int y = p->y - 1;
-    int end = p->x + p->w;
-    if (y < 0 || y >= g->h) return;
-    if (x < end) scr_put(g, x++, y, '[', fg1, DEFAULT_COLOR, 0);
-    char num[32];
-    snprintf(num, sizeof num, "%d", p->id);
-    x = draw_text(g, x, y, num, fg1, DEFAULT_COLOR, 0);
-    if (x < end) scr_put(g, x++, y, ':', fg2, DEFAULT_COLOR, 0);
-    if (x < end) scr_put(g, x++, y, ' ', fg2, DEFAULT_COLOR, 0);
-    const char *title = p->title[0] ? p->title : win->name;
-    const unsigned char *s = (const unsigned char *)title;
-    while (*s && x < end - 1) {
-        uint32_t cp;
-        int used = utf8_decode(s, (int)strlen((const char *)s), &cp);
-        int w = cp_width(cp);
-        if (w < 1) w = 1;
-        if (x + w > end - 1) break;
-        scr_put_wide(g, x, y, cp, fg3, DEFAULT_COLOR, 0);
-        x += w;
-        s += used;
-    }
-    if (x < end) scr_put(g, x, y, ']', fg1, DEFAULT_COLOR, 0);
-}
-
 static void draw_layout(Grid *g, Layout *l) {
     if (!l || l->w < 1 || l->h < 1) return;
     if (l->type == L_LEAF) {
@@ -1695,16 +1664,6 @@ static void draw_layout(Grid *g, Layout *l) {
     }
     draw_layout(g, l->a);
     draw_layout(g, l->b);
-}
-
-static void draw_labels(Grid *g, Layout *l, Window *win) {
-    if (!l || l->w < 1 || l->h < 1) return;
-    if (l->type == L_LEAF) {
-        draw_window_label(g, win, l->pane);
-        return;
-    }
-    draw_labels(g, l->a, win);
-    draw_labels(g, l->b, win);
 }
 
 static void status_right_draw(Grid *g, int rx, int y, const char *clock) {
@@ -1921,7 +1880,6 @@ static void compose(Session *s, Client *c, Grid *out) {
         border_join(mask, s->w, s->h);
         draw_layout(out, s->cur->root);
         border_render(out, mask);
-        draw_labels(out, s->cur->root, s->cur);
         free(mask);
     }
     if (c->mode == 4 && s->cur && s->cur->active) {

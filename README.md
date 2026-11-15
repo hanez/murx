@@ -175,11 +175,8 @@ Hard-coded:
 - Window list right-aligned: current name `colour11`, other names `colour12`,
   separators/flags `colour14`.
 - Pane borders are thin box-drawing lines (`─`, `│`, `┬`, `┼`, ...) in
-  `colour8`, drawn on the terminal's default background. The row above each
-  pane doubles as its title bar. The `[pane: title]` label text uses the
-  terminal's default background: brackets/numbers `colour7`, separator
-  `colour11`, title `colour15` on the active pane; brackets/numbers `colour8`,
-  separator `colour3`, title `colour12` on inactive panes.
+  `colour8`, drawn on the terminal's default background. Only splits have
+  borders; panes have no title row, leaving more space for terminal content.
 - Messages use `fg=colour6,bg=colour8`.
 
 Colours are written to the outer terminal in 256-colour form (`38;5;n` /
