@@ -8,6 +8,7 @@ make -B CC=clang
 ./moerx             # session "0"
 ./moerx work        # separate named session
 ./moerx -p x work # use Ctrl-X as this client's prefix
+./moerx -s bottom work # show the session status line at the bottom
 ./moerx --help      # all shortcuts
 ```
 
@@ -28,6 +29,12 @@ priority over any other control-key binding; `Ctrl-X x` still locks the client.
 Ctrl-A is sent straight to the pane. All tables below show the default prefix;
 replace it with your chosen key. When upgrading from a version without this
 option, restart the session server once so it understands the prefix setting.
+
+Use `-s top` or `-s bottom` (also `--status top|bottom`) to choose the status
+line position. New sessions default to top. An explicit choice also updates an
+existing session for all attached clients; omitting the option preserves its
+position. Prompts and messages follow the status line. Restart servers from
+older versions once before using this option.
 
 ## What it does
 
@@ -151,7 +158,7 @@ Restart an existing session server after upgrading to enable this feature.
 
 Hard-coded:
 
-- Status on top, default background, foreground `colour12`. The palette mirrors
+- Status on top by default (`-s bottom` moves it), default background, foreground `colour12`. The palette mirrors
   `~/.tmux.conf`.
 - `[moerx]` on the left (`moerx` in `colour14`, brackets `colour12`).
 - `[host] HH:MM:SS` on the right (`host` in `colour14`, brackets and clock

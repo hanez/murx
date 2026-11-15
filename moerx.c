@@ -1085,6 +1085,7 @@ struct Session {
     int listen_fd;
 
     int w, h;
+    int status_bottom;
     Window *windows;
     Window *cur, *last;
     int nwin;
@@ -1458,8 +1459,8 @@ static Window *window_new(Session *s, const char *name) {
 
 static void session_layout(Session *s) {
     if (!s->cur || !s->cur->root) return;
-    int top = 1;
-    int h = s->h - top;
+    int top = s->status_bottom ? 0 : 1;
+    int h = s->h - 1;
     if (h < 1) h = 1;
     layout_apply(s->cur->root, 0, top, s->w, h);
 }
@@ -1716,18 +1717,23 @@ static void status_right_draw(Grid *g, int rx, int y, const char *host,
     draw_text(g, px, y, " ", P_STATUS, DEFAULT_COLOR, 0);
 }
 
+static int status_y(Session *s) {
+    return s->status_bottom ? s->h - 1 : 0;
+}
+
 static void status_draw(Grid *g, Session *s, Client *c) {
     if (s->h < 1) return;
+    int y = status_y(s);
     for (int x = 0; x < s->w; x++) {
-        scr_put(g, x, 0, ' ', P_STATUS, DEFAULT_COLOR, 0);
+        scr_put(g, x, y, ' ', P_STATUS, DEFAULT_COLOR, 0);
     }
 
     int x = 0;
-    x = draw_text(g, x, 0, " ", P_STATUS, DEFAULT_COLOR, 0);
-    x = draw_text(g, x, 0, "[", P_STATUS, DEFAULT_COLOR, 0);
-    x = draw_text(g, x, 0, "moerx", P_ACCENT, DEFAULT_COLOR, 0);
-    x = draw_text(g, x, 0, "]", P_STATUS, DEFAULT_COLOR, 0);
-    x = draw_text(g, x, 0, " ", P_STATUS, DEFAULT_COLOR, 0);
+    x = draw_text(g, x, y, " ", P_STATUS, DEFAULT_COLOR, 0);
+    x = draw_text(g, x, y, "[", P_STATUS, DEFAULT_COLOR, 0);
+    x = draw_text(g, x, y, "moerx", P_ACCENT, DEFAULT_COLOR, 0);
+    x = draw_text(g, x, y, "]", P_STATUS, DEFAULT_COLOR, 0);
+    x = draw_text(g, x, y, " ", P_STATUS, DEFAULT_COLOR, 0);
     int left_len = x;
     if (left_len > 20) left_len = 20;
 
@@ -1750,7 +1756,7 @@ static void status_draw(Grid *g, Session *s, Client *c) {
     if (right_len > s->w) right_len = s->w;
     int rx = s->w - right_len;
     if (rx < 0) rx = 0;
-    status_right_draw(g, rx, 0, host, clockbuf);
+    status_right_draw(g, rx, y, host, clockbuf);
 
     int total = 0;
     for (Window *w = s->windows; w; w = w->next) {
@@ -1772,11 +1778,11 @@ static void status_draw(Grid *g, Session *s, Client *c) {
         if (w == s->cur) strcat(flags, "*");
         else if (w == s->last) strcat(flags, "-");
         int fg_name = (w == s->cur) ? P_CURRENT : P_STATUS;
-        wx = draw_text(g, wx, 0, num, P_STATUS, DEFAULT_COLOR, 0);
-        wx = draw_text(g, wx, 0, ":", P_ACCENT, DEFAULT_COLOR, 0);
-        wx = draw_text(g, wx, 0, w->name, fg_name, DEFAULT_COLOR, 0);
-        wx = draw_text(g, wx, 0, flags, P_ACCENT, DEFAULT_COLOR, 0);
-        wx = draw_text(g, wx, 0, " ", P_ACCENT, DEFAULT_COLOR, 0);
+        wx = draw_text(g, wx, y, num, P_STATUS, DEFAULT_COLOR, 0);
+        wx = draw_text(g, wx, y, ":", P_ACCENT, DEFAULT_COLOR, 0);
+        wx = draw_text(g, wx, y, w->name, fg_name, DEFAULT_COLOR, 0);
+        wx = draw_text(g, wx, y, flags, P_ACCENT, DEFAULT_COLOR, 0);
+        wx = draw_text(g, wx, y, " ", P_ACCENT, DEFAULT_COLOR, 0);
         if (wx >= need) break;
     }
 
@@ -1793,7 +1799,7 @@ static void status_draw(Grid *g, Session *s, Client *c) {
         int limit = s->w - right_len;
         if (limit > s->w) limit = s->w;
         if (limit < 1) limit = 1;
-        for (int i = 0; i < limit; i++) scr_put(g, i, 0, ' ', P_MSG, P_MSG_BG, 0);
+        for (int i = 0; i < limit; i++) scr_put(g, i, y, ' ', P_MSG, P_MSG_BG, 0);
         int ox = 0;
         const unsigned char *p = (const unsigned char *)overlay;
         while (*p && ox < limit) {
@@ -1802,14 +1808,14 @@ static void status_draw(Grid *g, Session *s, Client *c) {
             int w = cp_width(cp);
             if (w < 1) w = 1;
             if (ox + w > limit) break;
-            scr_put_wide(g, ox, 0, cp, P_MSG, P_MSG_BG, 0);
+            scr_put_wide(g, ox, y, cp, P_MSG, P_MSG_BG, 0);
             ox += w;
             p += used;
         }
     }
 
     /* keep host/time visible even if a message or window list is long */
-    status_right_draw(g, rx, 0, host, clockbuf);
+    status_right_draw(g, rx, y, host, clockbuf);
 }
 
 static void menu_draw(Grid *g, Session *s, Client *c) {
@@ -1829,7 +1835,8 @@ static void menu_draw(Grid *g, Session *s, Client *c) {
     if (width < 10) width = 10;
     int x0 = 1, y0 = 1;
     int h = n + 2;
-    if (y0 + h > s->h) h = s->h - y0;
+    int bottom = s->h - (s->status_bottom ? 1 : 0);
+    if (y0 + h > bottom) h = bottom - y0;
     for (int y = y0; y < y0 + h; y++) {
         for (int x = x0; x < x0 + width; x++) {
             scr_put(g, x, y, ' ', C_BLUE, C_GREY, 0);
@@ -1857,7 +1864,6 @@ static void compose(Session *s, Client *c, Grid *out) {
     }
     grid_init(out, s->w, s->h);
     grid_clear(out, DEFAULT_COLOR);
-    status_draw(out, s, c);
     if (s->cur && s->cur->root) {
         size_t n = (size_t)s->w * (size_t)s->h;
         uint8_t *mask = xcalloc(n, 1);
@@ -1884,6 +1890,7 @@ static void compose(Session *s, Client *c, Grid *out) {
         }
     }
     if (c->mode == 2) menu_draw(out, s, c);
+    status_draw(out, s, c);
 }
 
 static void cursor_for(Session *s, Client *c, int *x, int *y, int *visible) {
@@ -1893,7 +1900,7 @@ static void cursor_for(Session *s, Client *c, int *x, int *y, int *visible) {
     if (c->mode == 1) {
         int len = text_width(c->prompt);
         *x = len;
-        *y = 0;
+        *y = status_y(s);
         if (*x >= s->w) *x = s->w - 1;
         *visible = 1;
         return;
@@ -3132,6 +3139,14 @@ static void handle_message(Client *c, Session *s, uint32_t type, const unsigned 
             if (len >= 16) memcpy(&prefix, data + 12, 4);
             if (prefix < 1 || prefix > 26) { c->dead = 1; return; }
             c->prefix = (unsigned char)prefix;
+            /* 0 preserves the session position; 1 selects top, 2 bottom. */
+            uint32_t status = 0;
+            if (len >= 20) memcpy(&status, data + 16, 4);
+            if (status > 2) { c->dead = 1; return; }
+            if (status) {
+                s->status_bottom = status == 2;
+                session_layout(s);
+            }
             if (cols < 1) cols = 1;
             if (rows < 1) rows = 1;
             if (cols > 1000) cols = 1000;
@@ -3672,7 +3687,7 @@ static int terminal_truecolor(void) {
     return 1;
 }
 
-static int run_client(int fd, const char *name, unsigned char prefix) {
+static int run_client(int fd, const char *name, unsigned char prefix, int status) {
     struct termios saved;
     if (tty_raw(&saved) < 0) {
         fprintf(stderr, "moerx: not a terminal\n");
@@ -3707,8 +3722,8 @@ static int run_client(int fd, const char *name, unsigned char prefix) {
 
     int cols, rows;
     tty_size(&cols, &rows);
-    uint32_t attach[4] = { (uint32_t)cols, (uint32_t)rows,
-                           (uint32_t)terminal_truecolor(), prefix };
+    uint32_t attach[5] = { (uint32_t)cols, (uint32_t)rows,
+                           (uint32_t)terminal_truecolor(), prefix, (uint32_t)status };
     if (send_msg(fd, C_ATTACH, attach, sizeof attach) < 0) {
         /* errno is the only clue: the server accepted the connection but the
            attach write failed, usually because it closed the socket while
@@ -3838,11 +3853,15 @@ static int run_client(int fd, const char *name, unsigned char prefix) {
 
 static void print_help(FILE *out) {
     fprintf(out,
-        "usage: moerx [-p letter] [session]\n"
+        "usage: moerx [-p letter] [-s top|bottom] [session]\n"
         "       moerx -h | --help\n"
         "\n"
         "Attach to a running session, or start it if it is not running.\n"
         "The session name defaults to \"0\".\n"
+        "\n"
+        "Use -s top|bottom (or --status top|bottom) to position the status line.\n"
+        "New sessions default to top; an explicit choice updates all attached clients.\n"
+        "Without -s, keep the session position.\n"
         "\n"
         "Use -p x (or --prefix x) to choose Ctrl-X as this client's prefix.\n"
         "Letters a through z are supported (case-insensitive); the default is a (Ctrl-A).\n"
@@ -3916,6 +3935,7 @@ int main(int argc, char **argv) {
 
     int argi = 1;
     unsigned char prefix = DEFAULT_PREFIX;
+    int status = 0;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1]) {
         const char *option = argv[argi++];
         if (strcmp(option, "--") == 0) break;
@@ -3929,6 +3949,13 @@ int main(int argc, char **argv) {
                 return 2;
             }
             argi++;
+        } else if (strcmp(option, "-s") == 0 || strcmp(option, "--status") == 0) {
+            if (argi >= argc || (strcmp(argv[argi], "top") != 0 &&
+                                 strcmp(argv[argi], "bottom") != 0)) {
+                fprintf(stderr, "moerx: %s requires top or bottom\n", option);
+                return 2;
+            }
+            status = strcmp(argv[argi++], "bottom") == 0 ? 2 : 1;
         } else {
             fprintf(stderr, "moerx: unknown option '%s'\n", option);
             fprintf(stderr, "Try 'moerx --help' for more information.\n");
@@ -3958,6 +3985,6 @@ int main(int argc, char **argv) {
                 name, strerror(errno));
         return 1;
     }
-    return run_client(fd, name, prefix);
+    return run_client(fd, name, prefix, status);
 }
 
