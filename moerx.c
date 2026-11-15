@@ -98,7 +98,7 @@ static int send_msg(int fd, uint32_t type, const void *data, uint32_t len);
 #define MIN_COLS 20
 #define MIN_ROWS 5
 #define MSG_TIME 3000
-#define STATUS_INTERVAL 2
+#define STATUS_INTERVAL 1
 #define SIZE_CHECK_MS 250
 #define NAME_CHECK_MS 1000
 

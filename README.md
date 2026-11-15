@@ -150,7 +150,7 @@ Hard-coded:
   `~/.tmux.conf`.
 - `[moerx]` on the left (`moerx` in `colour14`, brackets `colour12`).
 - `[host] HH:MM:SS` on the right (`host` in `colour14`, brackets and clock
-  `colour12`), refreshed every 2 seconds.
+  `colour12`), refreshed every second.
 - Window list right-aligned: current name `colour11`, other names `colour12`,
   separators/flags `colour14`.
 - Pane borders are thin box-drawing lines (`─`, `│`, `┬`, `┼`, ...) in
