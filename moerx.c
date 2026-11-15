@@ -1126,6 +1126,7 @@ struct Session {
 
     int w, h;
     int status_bottom;
+    int show_cwd;
     Window *windows;
     Window *cur, *last;
     int nwin;
@@ -1819,11 +1820,14 @@ static void status_draw(Grid *g, Session *s, Client *c) {
     }
     int need = s->w - right_len;
     int start = need - total;
-    char cwd[PATH_MAX];
-    if (!status_cwd(s, cwd, sizeof cwd))
-        status_cwd_home(cwd, sizeof cwd);
-    int left_len = status_cwd_draw(g, y, cwd, start);
-    if (start < left_len) start = left_len;
+    int left_len = 0;
+    if (s->show_cwd) {
+        char cwd[PATH_MAX];
+        if (!status_cwd(s, cwd, sizeof cwd))
+            status_cwd_home(cwd, sizeof cwd);
+        left_len = status_cwd_draw(g, y, cwd, start);
+        if (start < left_len) start = left_len;
+    }
     if (start < 0) start = 0;
     int wx = start;
     for (Window *w = s->windows; w; w = w->next) {
@@ -3475,7 +3479,7 @@ static void server_fail(int readyfd, const char *stage, int err) {
     close(readyfd);
 }
 
-static void server_start(const char *path, const char *name, int readyfd) {
+static void server_start(const char *path, const char *name, int readyfd, int show_cwd) {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
     signal(SIGCHLD, SIG_DFL);
@@ -3523,6 +3527,7 @@ static void server_start(const char *path, const char *name, int readyfd) {
     s->w = 80;
     s->h = 24;
     s->running = 1;
+    s->show_cwd = show_cwd;
     s->last_status = now_ms();
 
     Window *w = window_new(s, NULL);
@@ -3602,7 +3607,7 @@ static int ensure_socket_dir(void) {
     return 0;
 }
 
-static int spawn_server(const char *path, const char *name) {
+static int spawn_server(const char *path, const char *name, int show_cwd) {
     if (ensure_socket_dir() < 0) return -1;
     char dir[PATH_MAX], lockpath[PATH_MAX + 64];
     socket_dir(dir, sizeof dir);
@@ -3650,7 +3655,7 @@ static int spawn_server(const char *path, const char *name) {
             if (dn > 2) close(dn);
         }
         close(lock);
-        server_start(path, name, p[1]);
+        server_start(path, name, p[1], show_cwd);
         _exit(1);
     }
     close(p[1]);
@@ -3907,7 +3912,7 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
 
 static void print_help(FILE *out) {
     fprintf(out,
-        "usage: moerx [-p letter] [-s top|bottom] [session]\n"
+        "usage: moerx [-p letter] [-s top|bottom] [--no-cwd] [session]\n"
         "       moerx -h | --help\n"
         "\n"
         "Attach to a running session, or start it if it is not running.\n"
@@ -3916,6 +3921,7 @@ static void print_help(FILE *out) {
         "Use -s top|bottom (or --status top|bottom) to position the status line.\n"
         "New sessions default to top; an explicit choice updates all attached clients.\n"
         "Without -s, keep the session position.\n"
+        "Use --no-cwd to hide the current directory in the status bar.\n"
         "\n"
         "Use -p x (or --prefix x) to choose Ctrl-X as this client's prefix.\n"
         "Letters a through z are supported (case-insensitive); the default is a (Ctrl-A).\n"
@@ -3990,6 +3996,7 @@ int main(int argc, char **argv) {
     int argi = 1;
     unsigned char prefix = DEFAULT_PREFIX;
     int status = 0;
+    int show_cwd = 1;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1]) {
         const char *option = argv[argi++];
         if (strcmp(option, "--") == 0) break;
@@ -3997,7 +4004,9 @@ int main(int argc, char **argv) {
             print_help(stdout);
             return 0;
         }
-        if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
+        if (strcmp(option, "--no-cwd") == 0) {
+            show_cwd = 0;
+        } else if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
             if (argi >= argc || !parse_prefix(argv[argi], &prefix)) {
                 fprintf(stderr, "moerx: %s requires a letter from a through z\n", option);
                 return 2;
@@ -4033,7 +4042,7 @@ int main(int argc, char **argv) {
     make_socket_path(name, path, sizeof path);
 
     int fd = connect_session(path);
-    if (fd < 0) fd = spawn_server(path, name);
+    if (fd < 0) fd = spawn_server(path, name, show_cwd);
     if (fd < 0) {
         fprintf(stderr, "moerx: cannot start or attach session '%s': %s\n",
                 name, strerror(errno));
