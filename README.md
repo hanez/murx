@@ -7,7 +7,7 @@ dependencies.
 make -B CC=clang
 ./moerx             # session "0"
 ./moerx work        # separate named session
-./moerx -p C-x work # use Ctrl-X as this client's prefix
+./moerx -p x work # use Ctrl-X as this client's prefix
 ./moerx --help      # all shortcuts
 ```
 
@@ -16,13 +16,13 @@ Detach with `Ctrl-A d`. Run `moerx` again to reattach.
 Every shortcut is a chain that starts with the prefix (by default `Ctrl-A`):
 press it, release it, then press the rest of the chain.
 
-Use `-p C-x` or `--prefix C-x` to choose Ctrl-X instead. Control letters
-`C-a` through `C-z` are supported, case-insensitively. The choice applies to
+Use `-p x` or `--prefix x` to choose Ctrl-X instead. Letters
+`a` through `z` select Ctrl-A through Ctrl-Z, case-insensitively. The choice applies to
 this attached client; use the option again when reattaching, or set a shell
-alias such as `alias moerx='moerx -p C-x'`. Clients attached to the same session
+alias such as `alias moerx='moerx -p x'`. Clients attached to the same session
 can choose different prefixes.
 
-With `-p C-x`, detach with `Ctrl-X d`, send a literal Ctrl-X with `Ctrl-X a`,
+With `-p x`, detach with `Ctrl-X d`, send a literal Ctrl-X with `Ctrl-X a`,
 and switch to the last window with `Ctrl-X Ctrl-X`. Doubling the prefix takes
 priority over any other control-key binding; `Ctrl-X x` still locks the client.
 Ctrl-A is sent straight to the pane. All tables below show the default prefix;

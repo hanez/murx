@@ -3838,14 +3838,14 @@ static int run_client(int fd, const char *name, unsigned char prefix) {
 
 static void print_help(FILE *out) {
     fprintf(out,
-        "usage: moerx [-p C-key] [session]\n"
+        "usage: moerx [-p letter] [session]\n"
         "       moerx -h | --help\n"
         "\n"
         "Attach to a running session, or start it if it is not running.\n"
         "The session name defaults to \"0\".\n"
         "\n"
-        "Use -p C-x (or --prefix C-x) to choose Ctrl-X as this client's prefix.\n"
-        "Keys C-a through C-z are supported; the default is C-a.\n"
+        "Use -p x (or --prefix x) to choose Ctrl-X as this client's prefix.\n"
+        "Letters a through z are supported (case-insensitive); the default is a (Ctrl-A).\n"
         "The shortcuts below use the default Ctrl-A prefix. Replace it with\n"
         "your chosen prefix, including both keys in the last-window shortcut.\n"
         "Prefix then a sends the chosen prefix literally to the pane.\n"
@@ -3903,9 +3903,8 @@ static void print_help(FILE *out) {
 }
 
 static int parse_prefix(const char *text, unsigned char *prefix) {
-    if (!text || strlen(text) != 3 ||
-        (text[0] != 'C' && text[0] != 'c') || text[1] != '-') return 0;
-    unsigned char letter = (unsigned char)text[2];
+    if (!text || strlen(text) != 1) return 0;
+    unsigned char letter = (unsigned char)text[0];
     if (letter >= 'A' && letter <= 'Z') letter += 'a' - 'A';
     if (letter < 'a' || letter > 'z') return 0;
     *prefix = letter - 'a' + 1;
@@ -3926,7 +3925,7 @@ int main(int argc, char **argv) {
         }
         if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
             if (argi >= argc || !parse_prefix(argv[argi], &prefix)) {
-                fprintf(stderr, "moerx: %s requires a key from C-a through C-z\n", option);
+                fprintf(stderr, "moerx: %s requires a letter from a through z\n", option);
                 return 2;
             }
             argi++;
