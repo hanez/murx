@@ -163,7 +163,14 @@ Hard-coded:
 
 - Status on top by default (`-s bottom` moves it), default background, foreground `colour12`. The palette mirrors
   `~/.tmux.conf`.
-- `[moerx]` on the left (`moerx` in `colour14`, brackets `colour12`).
+- `[/path/to/directory]` on the left (directory in `colour14`, brackets
+  `colour12`), refreshed every second and when switching panes. On Linux this
+  follows the active pane's foreground process, falling back to its shell's
+  directory; on other systems it shows the session's starting directory.
+  Paths in `$HOME` use `~`, for example `[~/code/moerx]`; `$HOME` itself
+  appears as `[~]`. Long paths end in `...` to leave room for the window list and clock; the
+  directory label is hidden when fewer than four columns remain. Remote SSH
+  directories are not available locally.
 - `HH:MM:SS` on the right in `colour12`, refreshed every second.
 - Window list right-aligned: current name `colour11`, other names `colour12`,
   separators/flags `colour14`.

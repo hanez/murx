@@ -1713,6 +1713,73 @@ static void status_right_draw(Grid *g, int rx, int y, const char *clock) {
     draw_text(g, px, y, " ", P_STATUS, DEFAULT_COLOR, 0);
 }
 
+/* Linux exposes the foreground job's cwd; fall back to the pane shell,
+   then the session's starting directory when it cannot be queried. */
+static void status_cwd(Session *s, char *out, size_t size) {
+#ifdef __linux__
+    Pane *p = s->cur ? s->cur->active : NULL;
+    if (p) {
+        pid_t foreground = tcgetpgrp(p->fd);
+        if (foreground <= 0) foreground = tcgetpgrp(p->tty_fd);
+        pid_t pids[2] = { foreground, p->pid };
+        for (int i = 0; i < 2; i++) {
+            if (pids[i] <= 0) continue;
+            char path[64];
+            snprintf(path, sizeof path, "/proc/%ld/cwd", (long)pids[i]);
+            ssize_t n = readlink(path, out, size - 1);
+            if (n > 0 && (size_t)n < size - 1) {
+                out[n] = '\0';
+                for (char *q = out; *q; q++) {
+                    if ((unsigned char)*q < 32 || (unsigned char)*q == 127) *q = '?';
+                }
+                return;
+            }
+        }
+    }
+#endif
+    snprintf(out, size, "%s", s->cwd);
+}
+
+/* Match a complete home-directory component, not a similarly named sibling. */
+static void status_cwd_home(char *cwd, size_t size) {
+    const char *home = getenv("HOME");
+    if (!home || home[0] != '/') return;
+    size_t n = strlen(home);
+    while (n > 1 && home[n - 1] == '/') n--;
+    if (strncmp(cwd, home, n) != 0) return;
+    if (cwd[n] && cwd[n] != '/' && n != 1) return;
+    const char *suffix = cwd + n;
+    if (n == 1 && *suffix) suffix--;
+    size_t len = strlen(suffix);
+    if (len + 2 > size) return;
+    memmove(cwd + 1, suffix, len + 1);
+    cwd[0] = '~';
+}
+
+/* Fit the directory label between the left edge and the window list. */
+static int status_cwd_draw(Grid *g, int y, const char *cwd, int limit) {
+    if (limit < 4) return 0;
+    int available = limit - 4; /* leading space, brackets, trailing space */
+    int truncated = text_width(cwd) > available;
+    int dots = truncated ? (available < 3 ? available : 3) : 0;
+    int x = draw_text(g, 0, y, " [", P_STATUS, DEFAULT_COLOR, 0);
+    const unsigned char *p = (const unsigned char *)cwd;
+    int end = x + available - dots;
+    while (*p) {
+        uint32_t cp;
+        int used = utf8_decode(p, (int)strlen((const char *)p), &cp);
+        int w = cp_width(cp);
+        if (w < 1) w = 1;
+        if (x + w > end) break;
+        scr_put_wide(g, x, y, cp, P_ACCENT, DEFAULT_COLOR, 0);
+        x += w;
+        p += used;
+    }
+    for (int i = 0; i < dots; i++)
+        x = draw_text(g, x, y, ".", P_ACCENT, DEFAULT_COLOR, 0);
+    return draw_text(g, x, y, "] ", P_STATUS, DEFAULT_COLOR, 0);
+}
+
 static int status_y(Session *s) {
     return s->status_bottom ? s->h - 1 : 0;
 }
@@ -1723,15 +1790,6 @@ static void status_draw(Grid *g, Session *s, Client *c) {
     for (int x = 0; x < s->w; x++) {
         scr_put(g, x, y, ' ', P_STATUS, DEFAULT_COLOR, 0);
     }
-
-    int x = 0;
-    x = draw_text(g, x, y, " ", P_STATUS, DEFAULT_COLOR, 0);
-    x = draw_text(g, x, y, "[", P_STATUS, DEFAULT_COLOR, 0);
-    x = draw_text(g, x, y, "moerx", P_ACCENT, DEFAULT_COLOR, 0);
-    x = draw_text(g, x, y, "]", P_STATUS, DEFAULT_COLOR, 0);
-    x = draw_text(g, x, y, " ", P_STATUS, DEFAULT_COLOR, 0);
-    int left_len = x;
-    if (left_len > 20) left_len = 20;
 
     time_t t = time(NULL);
     struct tm tmv;
@@ -1756,7 +1814,12 @@ static void status_draw(Grid *g, Session *s, Client *c) {
     }
     int need = s->w - right_len;
     int start = need - total;
+    char cwd[PATH_MAX];
+    status_cwd(s, cwd, sizeof cwd);
+    status_cwd_home(cwd, sizeof cwd);
+    int left_len = status_cwd_draw(g, y, cwd, start);
     if (start < left_len) start = left_len;
+    if (start < 0) start = 0;
     int wx = start;
     for (Window *w = s->windows; w; w = w->next) {
         char num[32], flags[8];
