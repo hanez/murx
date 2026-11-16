@@ -9,10 +9,10 @@ license=('Apache-2.0')
 depends=('glibc')
 source=('moerx.c' 'Makefile' 'moerx.1' 'README.md' 'LICENSE')
 sha256sums=(
-    '85c51d8bcfb660287ea1cc2dbb8a0edd6ab137ce766a929ddb4f0ae0e7e37d32'
+    '94d908770434001bf677d00127fb27e956e032e96ae4074fdac3ea46d6304e3d'
     'ad08bd0acd671f1f1716250528c2d4e5acc78a83bf55fcebdf41fa101fbb71d5'
-    '5787b0b3f36e5369511d165bb7097492888d39a35a936b1a2e2d47760156d6cf'
-    'be0803b92b688e125133cc62f5df31bb925203e88d8f31749fb7b5ebcdb4c71c'
+    '38b60956c86513c53bd129cb3541b28ac161c17d56c58441e8904cba7ea501d8'
+    'aabf1e9e829802d845d3d3d71b774fcadb83c5f3d5e525cbb4d366edca5749d4'
     '31c5556be4cdd9bf52bb55f18ead0c68a4f0e793c2c2dab0a2a2c6d92407d0d4'
 )
 

@@ -278,14 +278,20 @@ Disconnecting SSH restores the local shell's path and name.
 With splits the window and status follow the active pane.
 OSC 777;moerx-root;1 reports a root shell and OSC 777;moerx-root;0 clears it.
 The report is tied to the foreground SSH job and is ignored after disconnect.
-Remote shells without the hooks cannot report privilege changes.
+Remote su command titles also mark the active window red, even before a UID
+report arrives. Remote shells without hooks cannot report their UID.
+Install the matching hook in both the regular user's and root's startup files.
+The examples activate in interactive screen-256color terminals as well as when
+SSH_CONNECTION is set, so su and sudo login shells can report status even if
+they clear the SSH environment. The parent shell clears root status at its
+next prompt after the root shell exits.
 .SS Zsh
 Add the following to ~/.zshrc on the remote host.
 The preexec hook reports the first command of a pipeline;
 precmd restores the shell name and reports the directory after cd.
 .nf
 .ft CR
-if [[ \-n $SSH_CONNECTION ]]; then
+if [[ \-o interactive && ( \-n $SSH_CONNECTION || $TERM == screen\-256color ) ]]; then
     autoload \-Uz add\-zsh\-hook
     moerx_ssh_title() {
         local program=${1:t}
@@ -320,7 +326,8 @@ with that framework instead of replacing its trap.
 Do not enable function tracing (set -T) for these hooks.
 .nf
 .ft CR
-if [[ $\- == *i* && \-n $SSH_CONNECTION && \-z ${moerx_ssh_installed\-} ]]; then
+if [[ $\- == *i* && ( \-n $SSH_CONNECTION || $TERM == screen\-256color ) &&
+      \-z ${moerx_ssh_installed\-} ]]; then
     moerx_ssh_title() {
         local program=$1 directory=$PWD
         program=${program##*/}

@@ -105,12 +105,21 @@ Without a matching title, the window name remains `local-hostname:ssh`.
 Names refresh within one second; disconnecting restores the local hostname
 and shell name in the terminal title and window list.
 
+For root detection after `su` or `sudo -i`, install the matching hook in
+**both the regular user's and root's shell startup files on the remote host**.
+The hooks also activate in interactive `screen-256color` terminals, so they
+continue working when privilege-switching tools remove `$SSH_CONNECTION`.
+Root prompts and commands then turn the active window name red; exiting back
+to the regular shell restores yellow. A reported remote `su` command is red
+while it runs, even before the new shell reports its UID. SSH disconnects
+restore local detection. No SSH server configuration change is required.
+
 ### Zsh
 
 For **zsh**, add this to `~/.zshrc` on the **remote host**:
 
 ```zsh
-if [[ -n $SSH_CONNECTION ]]; then
+if [[ -o interactive && ( -n $SSH_CONNECTION || $TERM == screen-256color ) ]]; then
     autoload -Uz add-zsh-hook
     moerx_ssh_title() {
         local program=${1:t}
@@ -149,7 +158,8 @@ existing moerx servers and reload the remote shell configuration after upgrading
 For **Bash**, add this to `~/.bashrc` on the **remote host**:
 
 ```bash
-if [[ $- == *i* && -n $SSH_CONNECTION && -z ${moerx_ssh_installed-} ]]; then
+if [[ $- == *i* && ( -n $SSH_CONNECTION || $TERM == screen-256color ) &&
+      -z ${moerx_ssh_installed-} ]]; then
     moerx_ssh_title() {
         local program=$1 directory=$PWD
         program=${program##*/}

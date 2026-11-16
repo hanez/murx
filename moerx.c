@@ -42,6 +42,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <locale.h>
 #include <poll.h>
 #include <signal.h>
@@ -1249,8 +1250,14 @@ static int window_update_name(Session *s, Window *w) {
         if ((unsigned char)*s < 32 || (unsigned char)*s == 127) *s = '?';
     }
     int privileged = strcmp(base, "su") == 0 || process_is_root(pid);
-    if (strcmp(base, "ssh") == 0 && p->reported_root_pgrp == pid)
-        privileged = p->reported_root;
+    if (strcmp(base, "ssh") == 0) {
+        /* An SSH process's local UID says nothing about the remote user. */
+        privileged = p->reported_root_pgrp == pid && p->reported_root;
+        if (p->remote_title_pgrp == pid) {
+            const char *program = strchr(p->remote_title, ':');
+            if (program && strcmp(program + 1, "su") == 0) privileged = 1;
+        }
+    }
     int changed = w->privileged != privileged;
     w->privileged = privileged;
     char next[sizeof w->name];
