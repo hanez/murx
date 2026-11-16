@@ -301,3 +301,15 @@ This is "very basic" by design:
 
 Requires a C99 compiler and POSIX. Tested on macOS with clang; the code also
 builds with gcc on Linux and with clang on FreeBSD.
+
+## Authors
+
+Armin Jenewein - <a@bsd.pm> - Founder
+Johannes Findeisen - <you@hanez.org> - Contributor
+
+## License
+
+Copyright 2026 Armin Jenewein
+
+The code of moerx is licensed under the terms aof the Apache-2.0 license. See 
+LICENSE for details.

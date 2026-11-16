@@ -1,3 +1,12 @@
+/*
+ * This file is part of moerx - An ultra-minimalist, single-file, terminal
+ * multiplexer: https://codeberg.org/armin/moerx
+ *
+ * Copyright 2026 Armin Jenewein <a@bsd.pm>
+ * Licensed under the terms of the Apache-2.0 license.
+ * https://opensource.org/license/apache-2-0
+ */
+
 /* Feature macros must come before any system header. */
 #if defined(__FreeBSD__) || defined(__DragonFly__) || defined(__NetBSD__) || \
     defined(__OpenBSD__)
