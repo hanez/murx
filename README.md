@@ -5,20 +5,28 @@ dependencies.
 
 ```sh
 make -B CC=clang
-./moerx                            # session "0"
-./moerx work                       # separate named session
-./moerx -p x work                  # use Ctrl-X as this client's prefix
-./moerx --prefix x work            # same as -p x
-./moerx -s bottom work             # show the session status line at the bottom
-./moerx --status bottom work       # same as -s bottom
-./moerx --no-cwd work              # show [moerx] instead of the directory
-./moerx --no-cwd --no-moerx work   # do not show [moerx] instead of the directory
-./moerx --no-clock work            # hide the status bar clock
-./moerx --no-hostname work         # hide the hostname: prefix in window titles
-./moerx --help                     # all shortcuts
+./moerx                          # session "0"
+./moerx work                     # separate named session
+./moerx -p x work                # use Ctrl-X as this client's prefix
+./moerx --prefix x work          # same as -p x
+./moerx -s bottom work           # show the session status line at the bottom
+./moerx --status bottom work     # same as -s bottom
+./moerx --no-cwd work            # show [moerx] instead of the directory
+./moerx --no-cwd --no-moerx work # do not show [moerx] instead of the directory
+./moerx --no-clock work          # hide the status bar clock
+./moerx --no-hostname work       # hide the hostname: prefix in window titles
+./moerx -l, --list-sessions      # list running sessions without attaching
+./moerx --help                   # all shortcuts
 ```
 
 Detach with `Ctrl-A d`. Run `moerx` again to reattach.
+
+Use `moerx -l` or `moerx --list-sessions` to list running sessions, sorted by
+name, one per line. Listing works without a terminal and does not create or
+attach to a session. It checks the current user's runtime socket directory
+and `/tmp` fallback, skips stale sockets, and prints nothing when no sessions
+are running. Do not pass a session name with this option. Use `moerx name`
+to attach to a listed session.
 
 The [moerx(1) manual](moerx.1) covers all options, shortcuts, session behavior,
 and remote shell setup. Read it locally with `man ./moerx.1`. Run

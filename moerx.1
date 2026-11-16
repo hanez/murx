@@ -14,6 +14,9 @@ moerx \- small persistent terminal multiplexer
 .br
 .B moerx
 .BR \-h " | " \-\-help
+.br
+.B moerx
+.BR \-l " | " \-\-list\-sessions
 .SH DESCRIPTION
 .B moerx
 runs shells and terminal programs in windows and split panes.
@@ -33,6 +36,13 @@ hyphens or underscores. Use
 .B \-\-
 before a name beginning with a hyphen.
 .SH OPTIONS
+.TP
+.BR \-l ", " \-\-list\-sessions
+List running sessions for the current user, sorted by name, one per line.
+Checks the runtime socket directory and /tmp fallback, skips stale sockets
+and suppresses duplicate names. No terminal is required and no session is
+created or attached. Prints nothing if no sessions are running.
+Do not supply a session name with this option.
 .TP
 .BR \-p " letter, " \-\-prefix " letter"
 Choose this client's control prefix. Letters a through z are accepted,
@@ -407,10 +417,12 @@ or use the confirmed kill-pane, kill-window or kill-server bindings.
 .SH EXIT STATUS
 .TP
 .B 0
-Normal client exit, including detaching, or successful help output.
+Normal client exit, including detaching, successful help output or session
+listing (including an empty list).
 .TP
 .B 1
-Unable to start or attach to a session, or client terminal setup failed.
+Unable to start or attach to a session, client terminal setup failed, or
+a session directory could not be read while listing.
 .TP
 .B 2
 Invalid command-line options or session name.

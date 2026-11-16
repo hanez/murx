@@ -40,6 +40,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <locale.h>
@@ -3657,6 +3658,81 @@ static int connect_session(const char *path) {
     return fd;
 }
 
+static int session_name_compare(const void *a, const void *b) {
+    return strcmp((const char *)a, (const char *)b);
+}
+
+static int list_sessions(void) {
+    char dirs[2][PATH_MAX];
+    socket_dir(dirs[0], sizeof dirs[0]);
+    snprintf(dirs[1], sizeof dirs[1], "/tmp/moerx-%u", (unsigned)getuid());
+    char (*names)[49] = NULL;
+    size_t count = 0;
+    int result = 0;
+    for (int i = 0; i < 2; i++) {
+        if (i == 1 && strcmp(dirs[0], dirs[1]) == 0) continue;
+        DIR *dir = opendir(dirs[i]);
+        if (!dir) {
+            if (errno != ENOENT) {
+                fprintf(stderr, "moerx: cannot list %s: %s\n", dirs[i], strerror(errno));
+                result = 1;
+            }
+            continue;
+        }
+        struct dirent *entry;
+        for (;;) {
+            errno = 0;
+            entry = readdir(dir);
+            if (!entry) {
+                if (errno) {
+                    fprintf(stderr, "moerx: cannot read %s: %s\n", dirs[i], strerror(errno));
+                    result = 1;
+                }
+                break;
+            }
+            size_t len = strlen(entry->d_name);
+            if (len <= 5 || len > 53 || strcmp(entry->d_name + len - 5, ".sock") != 0)
+                continue;
+            char name[49];
+            memcpy(name, entry->d_name, len - 5);
+            name[len - 5] = '\0';
+            if (!valid_session_name(name)) continue;
+            struct sockaddr_un sa;
+            memset(&sa, 0, sizeof sa);
+            sa.sun_family = AF_UNIX;
+            size_t dirlen = strlen(dirs[i]);
+            if (dirlen + len + 2 > sizeof sa.sun_path) continue;
+            memcpy(sa.sun_path, dirs[i], dirlen);
+            sa.sun_path[dirlen] = '/';
+            memcpy(sa.sun_path + dirlen + 1, entry->d_name, len + 1);
+            struct stat st;
+            if (lstat(sa.sun_path, &st) < 0 || !S_ISSOCK(st.st_mode) || st.st_uid != getuid())
+                continue;
+            int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (fd < 0) continue;
+            int flags = fcntl(fd, F_GETFL, 0);
+            if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+                close(fd);
+                continue;
+            }
+            int connected = connect(fd, (struct sockaddr *)&sa, sizeof sa);
+            int live = connected == 0 || errno == EINPROGRESS || errno == EAGAIN;
+            close(fd);
+            if (!live) continue;
+            names = xrealloc(names, (count + 1) * sizeof *names);
+            memcpy(names[count++], name, len - 4);
+        }
+        closedir(dir);
+    }
+    if (count > 1) qsort(names, count, sizeof *names, session_name_compare);
+    for (size_t i = 0; i < count; i++) {
+        if (!i || strcmp(names[i], names[i - 1]) != 0) puts(names[i]);
+    }
+    free(names);
+    if (ferror(stdout)) result = 1;
+    return result;
+}
+
 static int ensure_socket_dir(void) {
     char dir[PATH_MAX];
     socket_dir(dir, sizeof dir);
@@ -3976,10 +4052,13 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
 static void print_help(FILE *out) {
     fprintf(out,
         "usage: moerx [-p letter] [-s top|bottom] [--no-cwd] [--no-clock] [--no-moerx] [--no-hostname] [session]\n"
+        "       moerx -l | --list-sessions\n"
         "       moerx -h | --help\n"
         "\n"
         "Attach to a running session, or start it if it is not running.\n"
         "The session name defaults to \"0\".\n"
+        "\n"
+        "Use -l or --list-sessions to list running sessions without attaching.\n"
         "\n"
         "Use -s top|bottom (or --status top|bottom) to position the status line.\n"
         "New sessions default to top; an explicit choice updates all attached clients.\n"
@@ -4066,6 +4145,7 @@ int main(int argc, char **argv) {
     int show_clock = 1;
     int show_moerx = 1;
     int show_hostname = 1;
+    int list = 0;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1]) {
         const char *option = argv[argi++];
         if (strcmp(option, "--") == 0) break;
@@ -4073,7 +4153,9 @@ int main(int argc, char **argv) {
             print_help(stdout);
             return 0;
         }
-        if (strcmp(option, "--no-cwd") == 0) {
+        if (strcmp(option, "-l") == 0 || strcmp(option, "--list-sessions") == 0) {
+            list = 1;
+        } else if (strcmp(option, "--no-cwd") == 0) {
             show_cwd = 0;
         } else if (strcmp(option, "--no-clock") == 0) {
             show_clock = 0;
@@ -4101,6 +4183,13 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (list) {
+        if (argi != argc) {
+            fprintf(stderr, "moerx: --list-sessions does not take a session name\n");
+            return 2;
+        }
+        return list_sessions();
+    }
     if (argc - argi > 1) {
         fprintf(stderr, "moerx: too many arguments\n");
         fprintf(stderr, "Try 'moerx --help' for more information.\n");
