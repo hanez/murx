@@ -286,7 +286,7 @@ SSH_CONNECTION is set, so su and sudo login shells can report status even if
 they clear the SSH environment. The parent shell clears root status at its
 next prompt after the root shell exits.
 .SS Zsh
-Add the following to ~/.zshrc on the remote host.
+Add the following to ~/.zshrc on the remote host you connect to over SSH.
 The preexec hook reports the first command of a pipeline;
 precmd restores the shell name and reports the directory after cd.
 .nf
@@ -318,7 +318,7 @@ fi
 .ft
 .fi
 .SS Bash
-Add the following to ~/.bashrc on the remote host.
+Add the following to ~/.bashrc on the remote host you connect to over SSH.
 It preserves string and array PROMPT_COMMAND values and avoids duplicate
 installation when sourced again. It installs a DEBUG trap: if an existing
 framework such as bash-preexec already owns that trap, integrate the functions

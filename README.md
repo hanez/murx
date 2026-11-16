@@ -92,31 +92,41 @@ terminal title. These options apply when starting a new session.
   pipelines, the foreground process group leader supplies the name. Linux uses
   `/proc`; other systems use `ps`.
 
-## SSH window names and directories
+## SSH window names and directories (optional)
 
-While an SSH pane is active, the outer terminal's window title shows
-`[moerx] remote-hostname:program`, for example `[moerx] server:vim`.
-The moerx window list also shows `server:vim`. Starting another
-remote program updates the title, and returning to the prompt shows the
-remote shell name, for example `[moerx] server:zsh`.
-The remote shell must send an OSC 0 or OSC 2 terminal title in
-that format: SSH itself does not report the remote foreground program.
-Without a matching title, the window name remains `local-hostname:ssh`.
-Names refresh within one second; disconnecting restores the local hostname
-and shell name in the terminal title and window list.
+This section is **optional** and only needed if you want `moerx` to show
+details from inside an SSH session (remote hostname/program in window titles
+and the window list, remote working directory in the status line, and reported
+remote root status). If you do not use SSH from `moerx`, or you are fine with
+the pane being shown as the local `ssh` process (e.g. `local-hostname:ssh`),
+you can skip this entire section—no remote configuration is required for
+normal local use.
 
-For root detection after `su` or `sudo -i`, install the matching hook in
-**both the regular user's and root's shell startup files on the remote host**.
-The hooks also activate in interactive `screen-256color` terminals, so they
-continue working when privilege-switching tools remove `$SSH_CONNECTION`.
-Root prompts and commands then turn the active window name red; exiting back
-to the regular shell restores yellow. A reported remote `su` command is red
-while it runs, even before the new shell reports its UID. SSH disconnects
-restore local detection. No SSH server configuration change is required.
+While an SSH pane is active, `moerx` can show `[moerx] remote-hostname:program`
+(for example `[moerx] server:vim`) in the outer terminal title and
+`server:vim` in the window list, update it as remote programs start/stop, and
+show the remote shell name (for example `server:zsh`) at a remote prompt.
+Because SSH does not expose the remote foreground program, directory, or root
+status to the local terminal, the **remote shell** must emit OSC title/reports
+for `moerx` to display this. Without those reports, names remain
+`local-hostname:ssh` and remote directory/root details are not tracked.
+Names refresh within one second; disconnecting restores the local hostname,
+shell name, and path.
+
+To enable remote root detection after `su` or `sudo -i`, install the matching
+hook in **both the regular user's and root's shell startup files on the remote
+host you connect to over SSH**. The hooks also activate in interactive
+`screen-256color` terminals, so they continue working when privilege-switching
+tools remove `$SSH_CONNECTION`. Root prompts and commands then turn the active
+window name red; exiting back to the regular shell restores yellow. A reported
+remote `su` command is red while it runs, even before the new shell reports its
+UID. SSH disconnects restore local detection. No SSH server configuration
+change is required.
 
 ### Zsh
 
-For **zsh**, add this to `~/.zshrc` on the **remote host**:
+If you want this optional integration, add this to `~/.zshrc` on the remote
+host you connect to over SSH:
 
 ```zsh
 if [[ -o interactive && ( -n $SSH_CONNECTION || $TERM == screen-256color ) ]]; then
@@ -155,7 +165,8 @@ existing moerx servers and reload the remote shell configuration after upgrading
 
 ### Bash
 
-For **Bash**, add this to `~/.bashrc` on the **remote host**:
+If you want this optional integration, add this to `~/.bashrc` on the remote
+host you connect to over SSH:
 
 ```bash
 if [[ $- == *i* && ( -n $SSH_CONNECTION || $TERM == screen-256color ) &&
