@@ -5,17 +5,17 @@ dependencies.
 
 ```sh
 make -B CC=clang
-./moerx                      # session "0"
-./moerx work                 # separate named session
-./moerx -p x work            # use Ctrl-X as this client's prefix
-./moerx --prefix x work      # same as -p x
-./moerx -s bottom work       # show the session status line at the bottom
-./moerx --status bottom work # same as -s bottom
-./moerx --no-cwd work        # show [moerx] instead of the directory
-./moerx --no-clock work      # hide the status bar clock
+./moerx                            # session "0"
+./moerx work                       # separate named session
+./moerx -p x work                  # use Ctrl-X as this client's prefix
+./moerx --prefix x work            # same as -p x
+./moerx -s bottom work             # show the session status line at the bottom
+./moerx --status bottom work       # same as -s bottom
+./moerx --no-cwd work              # show [moerx] instead of the directory
+./moerx --no-clock work            # hide the status bar clock
 ./moerx --no-clock --no-moerx work # hide clock and [moerx]
-./moerx --no-hostname work   # hide the hostname: prefix in window titles
-./moerx --help               # all shortcuts
+./moerx --no-hostname work         # hide the hostname: prefix in window titles
+./moerx --help                     # all shortcuts
 ```
 
 Detach with `Ctrl-A d`. Run `moerx` again to reattach.
