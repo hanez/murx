@@ -225,6 +225,12 @@ The outer terminal title follows [moerx] hostname:program.
 Hostnames are shortened at the first dot.
 Panes have no title rows; only splits have separator lines.
 The status uses colour12, accents colour14 and the current window colour11.
+The current window name turns bright red (colour9) when its active pane's
+foreground process is su or has effective UID 0, including programs launched
+from a root shell. Inactive names retain colour12. The color refreshes within
+one second and returns to yellow for an unprivileged active pane.
+Over SSH the shell must report root status; install the hooks in root's shell
+as well as the regular user's. This is a visual hint, not a security indicator.
 Borders use colour8 on the terminal's default background.
 Messages use foreground colour6 and background colour8.
 .PP
@@ -270,6 +276,9 @@ the moerx-specific form preserves remote ~ abbreviations.
 Reports are associated with the foreground job that sent them.
 Disconnecting SSH restores the local shell's path and name.
 With splits the window and status follow the active pane.
+OSC 777;moerx-root;1 reports a root shell and OSC 777;moerx-root;0 clears it.
+The report is tied to the foreground SSH job and is ignored after disconnect.
+Remote shells without the hooks cannot report privilege changes.
 .SS Zsh
 Add the following to ~/.zshrc on the remote host.
 The preexec hook reports the first command of a pipeline;
@@ -288,6 +297,7 @@ if [[ \-n $SSH_CONNECTION ]]; then
             directory="~/${directory#"$HOME/"}"
         fi
         printf '\e033]777;moerx\-cwd;%s\e007' "$directory"
+        printf '\e033]777;moerx\-root;%s\e007' "$((EUID == 0))"
     }
     moerx_ssh_preexec() {
         local \-a words
@@ -321,6 +331,7 @@ if [[ $\- == *i* && \-n $SSH_CONNECTION && \-z ${moerx_ssh_installed\-} ]]; then
             directory="~/${directory#"$HOME/"}"
         fi
         printf '\e033]777;moerx\-cwd;%s\e007' "$directory"
+        printf '\e033]777;moerx\-root;%s\e007' "$((EUID == 0))"
     }
     moerx_ssh_preexec() {
         if [[ ${moerx_ssh_ready\-0} == 1 && $1 != moerx_ssh_precmd ]]; then

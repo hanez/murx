@@ -122,6 +122,7 @@ if [[ -n $SSH_CONNECTION ]]; then
             directory="~/${directory#"$HOME/"}"
         fi
         printf '\033]777;moerx-cwd;%s\007' "$directory"
+        printf '\033]777;moerx-root;%s\007' "$((EUID == 0))"
     }
     moerx_ssh_preexec() {
         local -a words
@@ -159,6 +160,7 @@ if [[ $- == *i* && -n $SSH_CONNECTION && -z ${moerx_ssh_installed-} ]]; then
             directory="~/${directory#"$HOME/"}"
         fi
         printf '\033]777;moerx-cwd;%s\007' "$directory"
+        printf '\033]777;moerx-root;%s\007' "$((EUID == 0))"
     }
     moerx_ssh_preexec() {
         if [[ ${moerx_ssh_ready-0} == 1 && $1 != moerx_ssh_precmd ]]; then
@@ -209,6 +211,10 @@ including percent-encoded paths. These display the reported absolute path;
 `OSC 777;moerx-cwd;path` accepts either an absolute path or a path starting with
 `~` and preserves that abbreviation. Reports belong to the foreground job
 that sent them, so an old SSH connection cannot override the local shell's path.
+The hooks also send `OSC 777;moerx-root;1` for effective UID 0 and
+`OSC 777;moerx-root;0` otherwise, allowing the active remote window name to turn
+red in a root shell. This is a visual hint based on shell reports, not a
+security indicator.
 
 Other shells can use equivalent
 hooks sending `printf '\033]2;server:vim\007'`; use a hostname containing only
@@ -279,8 +285,13 @@ Hard-coded:
   directory label is hidden when fewer than four columns remain. Remote SSH
   directories require a shell report; see [SSH window names and directories](#ssh-window-names-and-directories).
 - `HH:MM:SS` on the right in `colour12`, refreshed every second.
-- Window list right-aligned: current name `colour11`, other names `colour12`,
-  separators/flags `colour14`.
+- Window list right-aligned: current name `colour11`, or red `colour9` when
+  its active pane's foreground process is `su` or has effective UID 0. Other
+  window names use `colour12`; separators/flags use `colour14`. The color
+  refreshes within one second and returns to yellow after leaving the root
+  shell or switching to an unprivileged pane. Over SSH, the remote hooks above
+  report root status; install them in each remote shell, including root's.
+  A root shell that does not run the hooks cannot report its privilege change.
 - Pane borders are thin box-drawing lines (`─`, `│`, `┬`, `┼`, ...) in
   `colour8`, drawn on the terminal's default background. Only splits have
   borders; panes have no title row, leaving more space for terminal content.

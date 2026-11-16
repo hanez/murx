@@ -42,7 +42,6 @@
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <locale.h>
 #include <poll.h>
 #include <signal.h>
@@ -82,6 +81,7 @@ static int send_msg(int fd, uint32_t type, const void *data, uint32_t len);
 #define C_CYAN    6
 #define C_WHITE   7
 #define C_GREY    8
+#define C_RED     9
 #define C_YELLOW  11
 #define C_BLUE    12
 #define C_CYAN2   14
@@ -330,6 +330,8 @@ struct Pane {
     pid_t remote_title_pgrp;
     char reported_cwd[PATH_MAX];
     pid_t reported_cwd_pgrp;
+    int reported_root;
+    pid_t reported_root_pgrp;
     int id;
     int tty_fd;
 
@@ -895,6 +897,15 @@ static void em_osc_cwd(Pane *p) {
 static void em_osc_done(Pane *p) {
     p->seq[p->seqlen] = '\0';
     em_osc_cwd(p);
+    if (strcmp(p->seq, "777;moerx-root;0") == 0 ||
+        strcmp(p->seq, "777;moerx-root;1") == 0) {
+        pid_t pid = tcgetpgrp(p->fd);
+        if (pid <= 0) pid = tcgetpgrp(p->tty_fd);
+        if (pid > 0) {
+            p->reported_root = p->seq[15] == '1';
+            p->reported_root_pgrp = pid;
+        }
+    }
     if (p->seqlen > 2 && (p->seq[0] == '0' || p->seq[0] == '2') && p->seq[1] == ';') {
         const char *t = p->seq + 2;
         size_t n = strlen(t);
@@ -1082,6 +1093,7 @@ typedef struct Layout {
 typedef struct Window {
     char name[128];
     int index;
+    int privileged;
     Layout *root;
     Pane *active;
     struct Window *next;
@@ -1173,6 +1185,31 @@ static int pane_remote_title(Pane *p, pid_t pid) {
     return 1;
 }
 
+/* Inspect the effective UID, so sudo/su descendants stay marked even
+   when their executable name changes from the shell to another program. */
+static int process_is_root(pid_t pid) {
+    unsigned long uid = 1;
+#ifdef __linux__
+    char path[64], line[256];
+    snprintf(path, sizeof path, "/proc/%ld/status", (long)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    while (fgets(line, sizeof line, f)) {
+        unsigned long real_uid;
+        if (sscanf(line, "Uid: %lu %lu", &real_uid, &uid) == 2) break;
+    }
+    fclose(f);
+#else
+    char command[96];
+    snprintf(command, sizeof command, "ps -p %ld -o uid=", (long)pid);
+    FILE *f = popen(command, "r");
+    if (!f) return 0;
+    int ok = fscanf(f, "%lu", &uid) == 1;
+    if (pclose(f) != 0 || !ok) return 0;
+#endif
+    return uid == 0;
+}
+
 /* Use the active pane's foreground process group, so returning from a job
    restores the shell name. */
 static int window_update_name(Session *s, Window *w) {
@@ -1211,6 +1248,11 @@ static int window_update_name(Session *s, Window *w) {
     for (char *s = base; *s; s++) {
         if ((unsigned char)*s < 32 || (unsigned char)*s == 127) *s = '?';
     }
+    int privileged = strcmp(base, "su") == 0 || process_is_root(pid);
+    if (strcmp(base, "ssh") == 0 && p->reported_root_pgrp == pid)
+        privileged = p->reported_root;
+    int changed = w->privileged != privileged;
+    w->privileged = privileged;
     char next[sizeof w->name];
     if (strcmp(base, "ssh") == 0 && p->remote_title_pgrp == pid && p->remote_title[0]) {
         if (s->show_hostname) {
@@ -1232,7 +1274,7 @@ static int window_update_name(Session *s, Window *w) {
     } else {
         snprintf(next, sizeof next, "%.63s", base);
     }
-    if (strcmp(w->name, next) == 0) return 0;
+    if (strcmp(w->name, next) == 0) return changed;
     snprintf(w->name, sizeof w->name, "%s", next);
     return 1;
 }
@@ -1883,7 +1925,7 @@ static void status_draw(Grid *g, Session *s, Client *c) {
         flags[0] = 0;
         if (w == s->cur) strcat(flags, "*");
         else if (w == s->last) strcat(flags, "-");
-        int fg_name = (w == s->cur) ? P_CURRENT : P_STATUS;
+        int fg_name = (w == s->cur) ? (w->privileged ? C_RED : P_CURRENT) : P_STATUS;
         wx = draw_text(g, wx, y, num, P_STATUS, DEFAULT_COLOR, 0);
         wx = draw_text(g, wx, y, ":", P_ACCENT, DEFAULT_COLOR, 0);
         wx = draw_text(g, wx, y, w->name, fg_name, DEFAULT_COLOR, 0);
