@@ -8,7 +8,7 @@ MANDIR  ?= $(PREFIX)/share/man
 all: moerx
 
 moerx: moerx.c
-	$(CC) $(CFLAGS) -o $@ moerx.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ moerx.c $(LDLIBS)
 
 install: moerx moerx.1
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(MANDIR)/man1"

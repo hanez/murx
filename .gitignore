@@ -2,6 +2,10 @@
 moerx
 *.o
 
+# Packages
+*.apk
+*.xz
+
 # Debug symbols (macOS)
 /*.dSYM/
 

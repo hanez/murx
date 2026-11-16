@@ -309,6 +309,40 @@ This is "very basic" by design:
 Requires a C99 compiler and POSIX. Tested on macOS with clang; the code also
 builds with gcc on Linux and with clang on FreeBSD.
 
+## Linux packages
+
+The root directory includes [APKBUILD](APKBUILD) for Alpine Linux and
+[PKGBUILD](PKGBUILD) for Arch Linux. Both build the local source files rather
+than downloading a release. Version `0.20261116` identifies an unreleased
+snapshot; update the version and release fields when packaging a newer snapshot.
+The packages install under `/usr`, including the manual, README and license.
+
+On Alpine, install `alpine-sdk`, configure your abuild signing key with
+`abuild-keygen -a -i`, and run as a regular user with abuild configured:
+
+```sh
+abuild -r
+```
+
+Install the resulting `moerx` package and its `moerx-doc` subpackage for the
+manual. abuild writes packages beneath its configured repository destination
+(normally `~/packages`); use `apk add /path/to/package.apk` for each signed
+package after trusting your local signing key.
+
+On Arch, install `base-devel` and run as a regular user:
+
+```sh
+makepkg -si
+```
+
+This builds the package and installs it through pacman. The recipe lists
+`x86_64` and `aarch64`; builds run on the current architecture.
+
+After changing any packaged source file (`moerx.c`, `Makefile`, `moerx.1`,
+`README.md` or `LICENSE`), refresh recipe checksums with `abuild checksum`
+on Alpine and `updpkgsums` (from `pacman-contrib`) on Arch. Neither recipe
+requires a test suite; its check step runs `moerx --help` as a smoke check.
+
 ## Authors
 
 - Armin Jenewein - <a@bsd.pm> - Founder
