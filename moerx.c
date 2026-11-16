@@ -75,7 +75,7 @@ typedef struct {
     uint32_t len;
 } MsgHdr;
 
-static int send_msg(int fd, uint32_t type, const void *data, uint32_t len);
+static int send_msg(int fd, uint32_t type, const void *data, size_t len);
 
 /* colour palette */
 #define C_BLACK   0
@@ -105,6 +105,9 @@ static int send_msg(int fd, uint32_t type, const void *data, uint32_t len);
 #define RGB_FLAG 0x01000000
 #define WIDE_CONT 0xFFFFFFFFu
 
+#define MAX_DIMENSION 1000    /* resource policy, not a C type limit */
+#define MAX_DRAW_BYTES (8u * 1024u * 1024u)
+
 #define MIN_COLS 20
 #define MIN_ROWS 5
 #define MSG_TIME 3000
@@ -116,6 +119,45 @@ static int send_msg(int fd, uint32_t type, const void *data, uint32_t len);
 /* small helpers                                                      */
 /* ------------------------------------------------------------------ */
 
+static void range_error(void) {
+    fputs("moerx: numeric limit exceeded\n", stderr);
+    exit(1);
+}
+
+static int count_add(int a, int b) {
+    if (a < 0 || b < 0 || b > INT_MAX - a) range_error();
+    return a + b;
+}
+
+static size_t size_add(size_t a, size_t b) {
+    if (b > SIZE_MAX - a) range_error();
+    return a + b;
+}
+
+static size_t size_mul(size_t a, size_t b) {
+    if (a && b > SIZE_MAX / a) range_error();
+    return a * b;
+}
+
+static size_t buffer_capacity(size_t cap, size_t need) {
+    while (cap < need) {
+        if (cap > SIZE_MAX / 2) return need;
+        cap *= 2;
+    }
+    return cap;
+}
+
+static int clamp_int(int value, int lo, int hi) {
+    return value < lo ? lo : value > hi ? hi : value;
+}
+
+/* Check the destination type before narrowing terminal dimensions. */
+static unsigned short tty_dimension(int value) {
+    if (value < 1) return 1;
+    if ((unsigned int)value > USHRT_MAX) return USHRT_MAX;
+    return (unsigned short)value;
+}
+
 static void *xmalloc(size_t n) {
     void *p = malloc(n);
     if (!p) {
@@ -126,7 +168,7 @@ static void *xmalloc(size_t n) {
 }
 
 static void *xcalloc(size_t n, size_t sz) {
-    void *p = calloc(n, sz);
+    void *p = calloc(1, size_mul(n, sz));
     if (!p) {
         fputs("moerx: out of memory\n", stderr);
         exit(1);
@@ -143,37 +185,61 @@ static void *xrealloc(void *p, size_t n) {
     return q;
 }
 
+/* Parse unsigned decimal fields without scanf's out-of-range conversions. */
+static int parse_ulong_field(const char **text, unsigned long *out) {
+    const unsigned char *p = (const unsigned char *)*text;
+    while (isspace(*p)) p++;
+    if (*p < '0' || *p > '9') return 0;
+    unsigned long value = 0;
+    do {
+        unsigned int digit = *p++ - '0';
+        if (value > (ULONG_MAX - digit) / 10) return 0;
+        value = value * 10 + digit;
+    } while (*p >= '0' && *p <= '9');
+    if (*p && !isspace(*p)) return 0;
+    *out = value;
+    *text = (const char *)p;
+    return 1;
+}
+
 static long long now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    struct timespec ts = { 0, 0 };
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) {
+        perror("moerx: clock_gettime");
+        exit(1);
+    }
+    if (ts.tv_sec < 0 || (uintmax_t)ts.tv_sec > (uintmax_t)(LLONG_MAX - MSG_TIME) / 1000 - 1)
+        range_error();
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-static int utf8_decode(const unsigned char *s, int n, uint32_t *cp) {
+static int unicode_scalar(uint32_t cp) {
+    return cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF);
+}
+
+static int utf8_decode(const unsigned char *s, size_t n, uint32_t *cp) {
+    if (!n) { *cp = 0xFFFD; return 0; }
     unsigned char b = s[0];
     if (b < 0x80) { *cp = b; return 1; }
-    if ((b & 0xE0) == 0xC0 && n >= 2) {
-        *cp = ((uint32_t)(b & 0x1F) << 6) | (s[1] & 0x3F);
-        return 2;
+    int len = b >= 0xC2 && b <= 0xDF ? 2 :
+              b >= 0xE0 && b <= 0xEF ? 3 :
+              b >= 0xF0 && b <= 0xF4 ? 4 : 0;
+    if (!len || n < (size_t)len) { *cp = 0xFFFD; return 1; }
+    uint32_t value = b & (0x7F >> len);
+    for (int i = 1; i < len; i++) {
+        if ((s[i] & 0xC0) != 0x80) { *cp = 0xFFFD; return 1; }
+        value = (value << 6) | (s[i] & 0x3F);
     }
-    if ((b & 0xF0) == 0xE0 && n >= 3) {
-        *cp = ((uint32_t)(b & 0x0F) << 12) |
-              ((uint32_t)(s[1] & 0x3F) << 6) | (s[2] & 0x3F);
-        return 3;
-    }
-    if ((b & 0xF8) == 0xF0 && n >= 4) {
-        *cp = ((uint32_t)(b & 0x07) << 18) |
-              ((uint32_t)(s[1] & 0x3F) << 12) |
-              ((uint32_t)(s[2] & 0x3F) << 6) | (s[3] & 0x3F);
-        return 4;
-    }
-    *cp = b;
-    return 1;
+    if (!unicode_scalar(value) || (len == 3 && value < 0x800) ||
+        (len == 4 && value < 0x10000)) { *cp = 0xFFFD; return 1; }
+    *cp = value;
+    return len;
 }
 
 static int cp_width(uint32_t cp) {
     int w;
     if (cp == 0 || cp == WIDE_CONT) return 1;
+    if (!unicode_scalar(cp) || (uintmax_t)cp > (uintmax_t)WCHAR_MAX) return 1;
     w = wcwidth((wchar_t)cp);
     if (w < 0) return 1;
     return w;
@@ -215,9 +281,12 @@ typedef struct {
 static void grid_init(Grid *g, int w, int h) {
     if (w < 1) w = 1;
     if (h < 1) h = 1;
+    /* Existing row offsets use int; prove their products fit as well. */
+    if (w > INT_MAX / h) range_error();
+    size_t bytes = size_mul(size_mul((size_t)w, (size_t)h), sizeof(Cell));
     g->w = w;
     g->h = h;
-    g->c = xmalloc((size_t)w * (size_t)h * sizeof(Cell));
+    g->c = xmalloc(bytes);
     for (int i = 0; i < w * h; i++) g->c[i] = blank_cell();
 }
 
@@ -342,7 +411,7 @@ struct Pane {
 static void pane_write(Pane *p, const void *buf, size_t len) {
     const char *s = buf;
     while (len > 0 && p->fd >= 0) {
-        ssize_t n = write(p->fd, s, len);
+        ssize_t n = write(p->fd, s, len > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : len);
         if (n < 0) {
             if (errno == EINTR) continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -354,6 +423,7 @@ static void pane_write(Pane *p, const void *buf, size_t len) {
             }
             return;
         }
+        if (n == 0) return;
         s += n;
         len -= (size_t)n;
     }
@@ -374,6 +444,7 @@ static void pane_lf(Pane *p) {
 }
 
 static void pane_put_cp(Pane *p, uint32_t cp) {
+    if (!unicode_scalar(cp)) cp = 0xFFFD;
     int w = cp_width(cp);
     Grid *g = p->grid;
     if (w == 0) return;                /* combining mark: ignore */
@@ -535,7 +606,8 @@ static int parse_params(const char *s, int len, int *out, int max) {
             any = 0;
         } else if (ch >= '0' && ch <= '9') {
             if (!any) val = 0;
-            if (val < 100000) val = val * 10 + (ch - '0');
+            int digit = ch - '0';
+            val = val > (INT_MAX - digit) / 10 ? INT_MAX : val * 10 + digit;
             any = 1;
         } else {
             /* private markers / intermediates: ignore */
@@ -641,14 +713,14 @@ static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
     case 'B':
         n = param(ps, pn, 0, 1);
         if (n < 1) n = 1;
-        p->cy += n;
+        p->cy += n > g->h - 1 - p->cy ? g->h - 1 - p->cy : n;
         if (p->cy > p->scroll_bot) p->cy = p->scroll_bot;
         p->wrap_pending = 0;
         break;
     case 'C':
         n = param(ps, pn, 0, 1);
         if (n < 1) n = 1;
-        p->cx += n;
+        p->cx += n > g->w - 1 - p->cx ? g->w - 1 - p->cx : n;
         if (p->cx >= g->w) p->cx = g->w - 1;
         p->wrap_pending = 0;
         break;
@@ -663,6 +735,8 @@ static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
         n = param(ps, pn, 0, 1);
         if (n < 1) n = 1;
         p->cx = 0;
+        /* Further blank scrolling cannot change the screen or history. */
+        if (n > g->h + HISTORY_LINES) n = g->h + HISTORY_LINES;
         for (int i = 0; i < n; i++) pane_lf(p);
         break;
     case 'F':
@@ -716,6 +790,7 @@ static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
         n = param(ps, pn, 0, 1);
         if (n < 1) n = 1;
         if (p->cy >= p->scroll_top && p->cy <= p->scroll_bot) {
+            if (n > p->scroll_bot - p->cy + 1) n = p->scroll_bot - p->cy + 1;
             for (int i = 0; i < n; i++) {
                 for (int y = p->scroll_bot; y > p->cy; y--) {
                     memcpy(&g->c[y * g->w], &g->c[(y - 1) * g->w], (size_t)g->w * sizeof(Cell));
@@ -728,6 +803,7 @@ static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
         n = param(ps, pn, 0, 1);
         if (n < 1) n = 1;
         if (p->cy >= p->scroll_top && p->cy <= p->scroll_bot) {
+            if (n > p->scroll_bot - p->cy + 1) n = p->scroll_bot - p->cy + 1;
             for (int i = 0; i < n; i++) {
                 for (int y = p->cy; y < p->scroll_bot; y++) {
                     memcpy(&g->c[y * g->w], &g->c[(y + 1) * g->w], (size_t)g->w * sizeof(Cell));
@@ -814,8 +890,8 @@ static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
                         p->saved_y = p->cy;
                         p->saved_pen = p->pen;
                     } else {
-                        p->cx = p->saved_x;
-                        p->cy = p->saved_y;
+                        p->cy = clamp_int(p->saved_y, 0, g->h - 1);
+                        p->cx = clamp_int(p->saved_x, 0, g->w - 1);
                         p->pen = p->saved_pen;
                     }
                 }
@@ -831,7 +907,7 @@ static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
             char out[64];
             if (v == 6) {
                 int l = snprintf(out, sizeof out, "\x1b[%d;%dR", p->cy + 1, p->cx + 1);
-                pane_write(p, out, (size_t)l);
+                if (l > 0 && (size_t)l < sizeof out) pane_write(p, out, (size_t)l);
             } else if (v == 5) {
                 pane_write(p, "\x1b[0n", 4);
             }
@@ -847,7 +923,7 @@ static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
         if (!priv && (v == 18 || v == 19)) {
             char out[64];
             int l = snprintf(out, sizeof out, "\x1b[8;%d;%dt", g->h, g->w);
-            pane_write(p, out, (size_t)l);
+            if (l > 0 && (size_t)l < sizeof out) pane_write(p, out, (size_t)l);
         }
         break;
     }
@@ -953,27 +1029,32 @@ static void em_byte(Pane *p, unsigned char b) {
                     p->u8_cp = (p->u8_cp << 6) | (b & 0x3F);
                     p->u8_have++;
                     if (p->u8_have == p->u8_need) {
-                        pane_put_cp(p, p->u8_cp);
+                        uint32_t min = p->u8_need == 1 ? 0x80 :
+                                       p->u8_need == 2 ? 0x800 : 0x10000;
+                        pane_put_cp(p, p->u8_cp < min ? 0xFFFD : p->u8_cp);
                         p->u8_need = p->u8_have = 0;
                     }
                     return;
                 }
+                pane_put_cp(p, 0xFFFD);
                 p->u8_need = p->u8_have = 0;
             }
             if (b < 0x80) {
                 pane_put_cp(p, b);
-            } else if ((b & 0xE0) == 0xC0) {
+            } else if (b >= 0xC2 && b <= 0xDF) {
                 p->u8_cp = b & 0x1F;
                 p->u8_need = 1;
                 p->u8_have = 0;
-            } else if ((b & 0xF0) == 0xE0) {
+            } else if (b >= 0xE0 && b <= 0xEF) {
                 p->u8_cp = b & 0x0F;
                 p->u8_need = 2;
                 p->u8_have = 0;
-            } else if ((b & 0xF8) == 0xF0) {
+            } else if (b >= 0xF0 && b <= 0xF4) {
                 p->u8_cp = b & 0x07;
                 p->u8_need = 3;
                 p->u8_have = 0;
+            } else {
+                pane_put_cp(p, 0xFFFD);
             }
         }
         break;
@@ -1169,6 +1250,25 @@ struct Session {
     long long last_name_check;
 };
 
+/* Compact sequence numbers on wrap, preserving the newest-client ordering. */
+static uint64_t client_next_order(Session *s) {
+    if (s->client_order == UINT64_MAX) {
+        uint64_t previous = 0, rank = 0;
+        for (;;) {
+            Client *next = NULL;
+            for (Client *c = s->clients; c; c = c->next) {
+                if (c->order > previous && (!next || c->order < next->order)) next = c;
+            }
+            if (!next) break;
+            previous = next->order;
+            if (rank == UINT64_MAX - 1) range_error();
+            next->order = ++rank;
+        }
+        s->client_order = rank;
+    }
+    return ++s->client_order;
+}
+
 /* Remote jobs are invisible locally. Accept host:program OSC titles from
    the current ssh job; a previous job's title must not name a new connection. */
 static int pane_remote_title(Pane *p, pid_t pid) {
@@ -1196,8 +1296,11 @@ static int process_is_root(pid_t pid) {
     FILE *f = fopen(path, "r");
     if (!f) return 0;
     while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, "Uid:", 4) != 0) continue;
+        const char *fields = line + 4;
         unsigned long real_uid;
-        if (sscanf(line, "Uid: %lu %lu", &real_uid, &uid) == 2) break;
+        if (!parse_ulong_field(&fields, &real_uid) || !parse_ulong_field(&fields, &uid)) uid = 1;
+        break;
     }
     fclose(f);
 #else
@@ -1205,7 +1308,9 @@ static int process_is_root(pid_t pid) {
     snprintf(command, sizeof command, "ps -p %ld -o uid=", (long)pid);
     FILE *f = popen(command, "r");
     if (!f) return 0;
-    int ok = fscanf(f, "%lu", &uid) == 1;
+    char line[256];
+    const char *fields = line;
+    int ok = fgets(line, sizeof line, f) && parse_ulong_field(&fields, &uid);
     if (pclose(f) != 0 || !ok) return 0;
 #endif
     return uid == 0;
@@ -1286,10 +1391,11 @@ static int window_update_name(Session *s, Window *w) {
     return 1;
 }
 
-static void pane_set_winsize(Pane *p, int w, int h) {    struct winsize ws;
+static void pane_set_winsize(Pane *p, int w, int h) {
+    struct winsize ws;
     memset(&ws, 0, sizeof ws);
-    ws.ws_col = (unsigned short)w;
-    ws.ws_row = (unsigned short)h;
+    ws.ws_col = tty_dimension(w);
+    ws.ws_row = tty_dimension(h);
 
     /* macOS rejects TIOCSWINSZ on the master, so always set it on the slave.
        The server keeps a slave fd open for the whole life of the pane: this
@@ -1359,8 +1465,8 @@ static Pane *pane_new(const char *cwd, int w, int h, const char *title) {
        EOF on the master (and on macOS TIOCSWINSZ only works on the slave). */
     struct winsize iws;
     memset(&iws, 0, sizeof iws);
-    iws.ws_col = (unsigned short)(w > 0 ? w : 80);
-    iws.ws_row = (unsigned short)(h > 0 ? h : 24);
+    iws.ws_col = tty_dimension(w > 0 ? w : 80);
+    iws.ws_row = tty_dimension(h > 0 ? h : 24);
     int slave_fd = open(slave_path, O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (slave_fd < 0) {
         close(master);
@@ -1448,7 +1554,7 @@ static void layout_free(Layout *l) {
 static int layout_pane_count(Layout *l) {
     if (!l) return 0;
     if (l->type == L_LEAF) return 1;
-    return layout_pane_count(l->a) + layout_pane_count(l->b);
+    return count_add(layout_pane_count(l->a), layout_pane_count(l->b));
 }
 
 static void layout_apply(Layout *l, int x, int y, int w, int h) {
@@ -1517,7 +1623,10 @@ static Layout *layout_find_leaf(Layout *l, Pane *p) {
 
 static void window_renumber(Window *list) {
     int i = 0;
-    for (Window *w = list; w; w = w->next) w->index = i++;
+    for (Window *w = list; w; w = w->next) {
+        w->index = i;
+        i = count_add(i, 1);
+    }
     /* Pane numbers are absolute across the whole session, not per window, so
        that the [N: title] labels stay stable no matter which window is
        current. */
@@ -1526,7 +1635,10 @@ static void window_renumber(Window *list) {
         Pane *list2[128];
         int n = 0;
         if (w->root) layout_collect(w->root, list2, &n);
-        for (int j = 0; j < n; j++) list2[j]->id = id++;
+        for (int j = 0; j < n; j++) {
+            list2[j]->id = id;
+            id = count_add(id, 1);
+        }
     }
 }
 
@@ -1576,7 +1688,7 @@ static Window *window_new(Session *s, const char *name) {
         while (tail->next) tail = tail->next;
         tail->next = w;
     }
-    s->nwin++;
+    s->nwin = count_add(s->nwin, 1);
     window_renumber(s->windows);
     return w;
 }
@@ -1652,9 +1764,10 @@ static int text_width(const char *s) {
     const unsigned char *p = (const unsigned char *)s;
     while (*p) {
         uint32_t cp;
-        int used = utf8_decode(p, (int)strlen((const char *)p), &cp);
+        int used = utf8_decode(p, strlen((const char *)p), &cp);
         int w = cp_width(cp);
         if (w < 0) w = 1;
+        if (n > INT_MAX - w) return INT_MAX;
         n += w;
         p += used;
     }
@@ -1665,9 +1778,10 @@ static int draw_text(Grid *g, int x, int y, const char *s, int fg, int bg, int a
     const unsigned char *p = (const unsigned char *)s;
     while (*p) {
         uint32_t cp;
-        int used = utf8_decode(p, (int)strlen((const char *)p), &cp);
+        int used = utf8_decode(p, strlen((const char *)p), &cp);
         int w = cp_width(cp);
         if (w < 0) w = 1;
+        if (x > INT_MAX - w) return INT_MAX;
         if (cp >= 32 && cp != 0x7f) scr_put_wide(g, x, y, cp, fg, bg, attr);
         x += w;
         p += used;
@@ -1719,7 +1833,9 @@ static void border_collect(uint8_t *m, int w, int h, Layout *l) {
 /* Fill in the missing half of a T-junction: a line that ends next to a
  * perpendicular one should meet it instead of leaving a one-cell gap. */
 static void border_join(uint8_t *m, int w, int h) {
-    uint8_t *add = xcalloc((size_t)w * (size_t)h, 1);
+    if (w < 1 || h < 1) return;
+    if (w > INT_MAX / h) range_error();
+    uint8_t *add = xcalloc((size_t)w, (size_t)h);
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             uint8_t b = m[y * w + x];
@@ -1858,7 +1974,7 @@ static int status_cwd_draw(Grid *g, int y, const char *cwd, int limit) {
     int end = x + available - dots;
     while (*p) {
         uint32_t cp;
-        int used = utf8_decode(p, (int)strlen((const char *)p), &cp);
+        int used = utf8_decode(p, strlen((const char *)p), &cp);
         int w = cp_width(cp);
         if (w < 1) w = 1;
         if (x + w > end) break;
@@ -1889,8 +2005,8 @@ static void status_draw(Grid *g, Session *s, Client *c) {
     if (s->show_clock) {
         time_t t = time(NULL);
         struct tm tmv;
-        localtime_r(&t, &tmv);
-        strftime(clockbuf, sizeof clockbuf, "%H:%M:%S", &tmv);
+        if (localtime_r(&t, &tmv) &&
+            !strftime(clockbuf, sizeof clockbuf, "%H:%M:%S", &tmv)) clockbuf[0] = '\0';
         right_len = text_width(clockbuf) + 2;
         if (right_len > s->w) right_len = s->w;
         rx = s->w - right_len;
@@ -1905,7 +2021,8 @@ static void status_draw(Grid *g, Session *s, Client *c) {
         flags[0] = 0;
         if (w == s->cur) strcat(flags, "*");
         else if (w == s->last) strcat(flags, "-");
-        total += (int)strlen(num) + 1 + text_width(w->name) + (int)strlen(flags) + 1;
+        int width = (int)strlen(num) + 1 + text_width(w->name) + (int)strlen(flags) + 1;
+        total = count_add(total, width);
     }
     int need = s->w - right_len;
     int start = need - total;
@@ -1959,7 +2076,7 @@ static void status_draw(Grid *g, Session *s, Client *c) {
         const unsigned char *p = (const unsigned char *)overlay;
         while (*p && ox < limit) {
             uint32_t cp;
-            int used = utf8_decode(p, (int)strlen((const char *)p), &cp);
+            int used = utf8_decode(p, strlen((const char *)p), &cp);
             int w = cp_width(cp);
             if (w < 1) w = 1;
             if (ox + w > limit) break;
@@ -2022,8 +2139,7 @@ static void compose(Session *s, Client *c, Grid *out) {
     grid_init(out, s->w, s->h);
     grid_clear(out, DEFAULT_COLOR);
     if (s->cur && s->cur->root) {
-        size_t n = (size_t)s->w * (size_t)s->h;
-        uint8_t *mask = xcalloc(n, 1);
+        uint8_t *mask = xcalloc((size_t)out->w, (size_t)out->h);
         border_collect(mask, s->w, s->h, s->cur->root);
         border_join(mask, s->w, s->h);
         draw_layout(out, s->cur->root);
@@ -2084,9 +2200,9 @@ typedef struct {
 } Buf;
 
 static void buf_add(Buf *b, const void *data, size_t n) {
-    if (b->len + n + 1 > b->cap) {
-        size_t cap = b->cap ? b->cap : 4096;
-        while (cap < b->len + n + 1) cap *= 2;
+    size_t need = size_add(size_add(b->len, n), 1);
+    if (need > b->cap) {
+        size_t cap = buffer_capacity(b->cap ? b->cap : 4096, need);
         b->p = xrealloc(b->p, cap);
         b->cap = cap;
     }
@@ -2294,8 +2410,14 @@ static void draw_frame(Session *s, Client *c, Grid *scr) {
     }
     c->prev_valid = 1;
 
-    if (b.len && send_msg(c->fd, S_DRAW, b.p, (uint32_t)b.len) < 0) {
-        c->dead = 1;
+    for (size_t off = 0; off < b.len;) {
+        size_t len = b.len - off;
+        if (len > MAX_DRAW_BYTES) len = MAX_DRAW_BYTES;
+        if (send_msg(c->fd, S_DRAW, b.p + off, len) < 0) {
+            c->dead = 1;
+            break;
+        }
+        off += len;
     }
     free(b.p);
 }
@@ -2307,7 +2429,7 @@ static void draw_frame(Session *s, Client *c, Grid *scr) {
 static int write_all(int fd, const void *data, size_t len) {
     const char *p = data;
     while (len > 0) {
-        ssize_t n = write(fd, p, len);
+        ssize_t n = write(fd, p, len > (size_t)SSIZE_MAX ? (size_t)SSIZE_MAX : len);
         if (n < 0) {
             if (errno == EINTR) continue;
             return -1;
@@ -2319,10 +2441,11 @@ static int write_all(int fd, const void *data, size_t len) {
     return 0;
 }
 
-static int send_msg(int fd, uint32_t type, const void *data, uint32_t len) {
+static int send_msg(int fd, uint32_t type, const void *data, size_t len) {
     MsgHdr h;
+    if (len > UINT32_MAX) { errno = EMSGSIZE; return -1; }
     h.type = type;
-    h.len = len;
+    h.len = (uint32_t)len;
     if (write_all(fd, &h, sizeof h) < 0) return -1;
     if (len && write_all(fd, data, len) < 0) return -1;
     return 0;
@@ -2702,7 +2825,7 @@ static void client_invalidate(Client *c) {
 
 static void client_detach(Client *c, const char *msg) {
     if (c->fd < 0) return;
-    send_msg(c->fd, S_DETACH, msg, (uint32_t)strlen(msg) + 1);
+    send_msg(c->fd, S_DETACH, msg, size_add(strlen(msg), 1));
     close(c->fd);
     c->fd = -1;
     c->dead = 1;
@@ -2720,7 +2843,8 @@ static void client_lock(Client *c) {
     if (y < 0) y = 0;
     char out[512];
     int n = snprintf(out, sizeof out, "\x1b[0m\x1b[2J\x1b[H\x1b[?25l\x1b[%d;%dH%s", y + 1, x + 1, text);
-    if (n > 0 && c->fd >= 0) send_msg(c->fd, S_DRAW, out, (uint32_t)n);
+    if (n > 0 && (size_t)n < sizeof out && c->fd >= 0)
+        send_msg(c->fd, S_DRAW, out, (size_t)n);
     client_invalidate(c);
 }
 
@@ -2728,7 +2852,7 @@ static void client_unlock(Client *c) {
     c->locked = 0;
     if (c->fd >= 0) {
         const char *seq = "\x1b[2J\x1b[H";
-        send_msg(c->fd, S_DRAW, seq, (uint32_t)strlen(seq));
+        send_msg(c->fd, S_DRAW, seq, strlen(seq));
     }
     client_invalidate(c);
 }
@@ -2765,7 +2889,15 @@ static void apply_prompt(Client *c, Session *s) {
         const char *name = c->prompt + c->prompt_label_len;
         if (*name) rename_active_window(s, name);
     } else if (c->prompt_kind == 2) {
-        int idx = atoi(c->prompt + c->prompt_label_len);
+        const char *text = c->prompt + c->prompt_label_len;
+        char *end;
+        errno = 0;
+        long value = strtol(text, &end, 10);
+        if (errno == ERANGE || end == text || *end || value < 0 || value > INT_MAX) {
+            c->mode = 0;
+            return;
+        }
+        int idx = (int)value;
         for (Window *w = s->windows; w; w = w->next) {
             if (w->index == idx) {
                 select_window(s, w);
@@ -2931,7 +3063,7 @@ static void prefix_command(Client *c, Session *s, int key) {
     case 'R':
         /* Make this client's terminal the size source again, even if another
            client attached or resized more recently. */
-        c->order = ++s->client_order;
+        c->order = client_next_order(s);
         session_recalc_size(s);
         invalidate_clients(s);
         s->redraw = 1;
@@ -3202,7 +3334,7 @@ static void term_handler(int sig) {
 
 static int session_pane_count(Session *s) {
     int n = 0;
-    for (Window *w = s->windows; w; w = w->next) n += layout_pane_count(w->root);
+    for (Window *w = s->windows; w; w = w->next) n = count_add(n, layout_pane_count(w->root));
     return n;
 }
 
@@ -3305,13 +3437,13 @@ static void handle_message(Client *c, Session *s, uint32_t type, const unsigned 
             }
             if (cols < 1) cols = 1;
             if (rows < 1) rows = 1;
-            if (cols > 1000) cols = 1000;
-            if (rows > 1000) rows = 1000;
+            if (cols > MAX_DIMENSION) cols = MAX_DIMENSION;
+            if (rows > MAX_DIMENSION) rows = MAX_DIMENSION;
             c->cols = (int)cols;
             c->rows = (int)rows;
             c->truecolor = (flags & 1) != 0;
             c->attached = 1;
-            c->order = ++s->client_order;
+            c->order = client_next_order(s);
             client_invalidate(c);
             session_recalc_size(s);
             invalidate_clients(s);
@@ -3323,11 +3455,11 @@ static void handle_message(Client *c, Session *s, uint32_t type, const unsigned 
             memcpy(&rows, data + 4, 4);
             if (cols < 1) cols = 1;
             if (rows < 1) rows = 1;
-            if (cols > 1000) cols = 1000;
-            if (rows > 1000) rows = 1000;
+            if (cols > MAX_DIMENSION) cols = MAX_DIMENSION;
+            if (rows > MAX_DIMENSION) rows = MAX_DIMENSION;
             c->cols = (int)cols;
             c->rows = (int)rows;
-            c->order = ++s->client_order;
+            c->order = client_next_order(s);
             client_invalidate(c);
             session_recalc_size(s);
             invalidate_clients(s);
@@ -3345,7 +3477,7 @@ static void client_read_socket(Client *c, Session *s) {
         c->dead = 1;
         return;
     }
-    if (c->netlen + (size_t)n > sizeof c->net) {
+    if ((size_t)n > sizeof c->net - c->netlen) {
         c->dead = 1;
         return;
     }
@@ -3353,11 +3485,11 @@ static void client_read_socket(Client *c, Session *s) {
     c->netlen += (size_t)n;
 
     size_t off = 0;
-    while (off + sizeof(MsgHdr) <= c->netlen) {
+    while (c->netlen - off >= sizeof(MsgHdr)) {
         MsgHdr h;
         memcpy(&h, c->net + off, sizeof h);
-        if (h.len > 1024 * 1024) { c->dead = 1; return; }
-        if (off + sizeof h + h.len > c->netlen) break;
+        if (h.len > sizeof c->net - sizeof h) { c->dead = 1; return; }
+        if (h.len > c->netlen - off - sizeof h) break;
         handle_message(c, s, h.type, c->net + off + sizeof h, h.len);
         off += sizeof h + h.len;
     }
@@ -3377,21 +3509,21 @@ static void accept_client(Session *s) {
 
 static void server_notify_all(Session *s, const char *msg) {
     for (Client *c = s->clients; c; c = c->next) {
-        if (c->fd >= 0) send_msg(c->fd, S_DETACH, msg, (uint32_t)strlen(msg) + 1);
+        if (c->fd >= 0) send_msg(c->fd, S_DETACH, msg, size_add(strlen(msg), 1));
     }
 }
 
 static void run_server(Session *s) {
-    int maxpanes = session_pane_count(s) + 64;
+    int maxpanes = count_add(session_pane_count(s), 64);
     Pane **panes = xcalloc((size_t)maxpanes, sizeof(Pane *));
     unsigned char rbuf[65536];
     int dirty = 1;
 
     while (s->running && !g_term) {
         int need = session_pane_count(s);
-        if (need + 8 > maxpanes) {
-            maxpanes = need + 64;
-            panes = xrealloc(panes, (size_t)maxpanes * sizeof(Pane *));
+        if (need > maxpanes - 8) {
+            maxpanes = count_add(need, 64);
+            panes = xrealloc(panes, size_mul((size_t)maxpanes, sizeof(Pane *)));
         }
         int np = 0;
         session_panes(s, panes, maxpanes, &np);
@@ -3425,8 +3557,8 @@ static void run_server(Session *s) {
         }
 
         int nclients = 0;
-        for (Client *c = s->clients; c; c = c->next) nclients++;
-        int nfds = 1 + nclients + np;
+        for (Client *c = s->clients; c; c = c->next) nclients = count_add(nclients, 1);
+        int nfds = count_add(count_add(nclients, np), 1);
         struct pollfd *pfds = xcalloc((size_t)nfds, sizeof(struct pollfd));
         Client **cmap = xcalloc((size_t)nclients + 1, sizeof(Client *));
         int idx = 0;
@@ -3451,7 +3583,13 @@ static void run_server(Session *s) {
 
         int timeout = 200;
         int pr = poll(pfds, (nfds_t)idx, timeout);
-        if (pr < 0 && errno != EINTR) break;
+        if (pr < 0) {
+            int interrupted = errno == EINTR;
+            free(pfds);
+            free(cmap);
+            if (interrupted) continue;
+            break;
+        }
 
         if (pr > 0 && (pfds[0].revents & POLLIN)) {
             accept_client(s);
@@ -3768,7 +3906,7 @@ static int list_sessions(void) {
             int live = connected == 0 || errno == EINPROGRESS || errno == EAGAIN;
             close(fd);
             if (!live) continue;
-            names = xrealloc(names, (count + 1) * sizeof *names);
+            names = xrealloc(names, size_mul(size_add(count, 1), sizeof *names));
             memcpy(names[count++], name, len - 4);
         }
         closedir(dir);
@@ -3902,9 +4040,9 @@ typedef struct {
 } NetBuf;
 
 static void net_append(NetBuf *nb, const unsigned char *data, size_t n) {
-    if (nb->len + n > nb->cap) {
-        size_t cap = nb->cap ? nb->cap : 65536;
-        while (cap < nb->len + n) cap *= 2;
+    size_t need = size_add(nb->len, n);
+    if (need > nb->cap) {
+        size_t cap = buffer_capacity(nb->cap ? nb->cap : 65536, need);
         nb->p = xrealloc(nb->p, cap);
         nb->cap = cap;
     }
@@ -4051,7 +4189,7 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
             unsigned char buf[4096];
             ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
             if (n > 0) {
-                if (send_msg(fd, C_INPUT, buf, (uint32_t)n) < 0) break;
+                if (send_msg(fd, C_INPUT, buf, (size_t)n) < 0) break;
             } else if (n == 0) {
                 break;
             }
@@ -4066,11 +4204,11 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
             }
             net_append(&nb, buf, (size_t)n);
             size_t off = 0;
-            while (off + sizeof(MsgHdr) <= nb.len) {
+            while (nb.len - off >= sizeof(MsgHdr)) {
                 MsgHdr h;
                 memcpy(&h, nb.p + off, sizeof h);
-                if (h.len > 8 * 1024 * 1024) { done = 1; break; }
-                if (off + sizeof h + h.len > nb.len) break;
+                if (h.len > MAX_DRAW_BYTES) { done = 1; break; }
+                if (h.len > nb.len - off - sizeof h) break;
                 unsigned char *payload = nb.p + off + sizeof h;
                 if (h.type == S_DRAW) {
                     write_all(STDOUT_FILENO, payload, h.len);

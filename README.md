@@ -332,6 +332,11 @@ This is "very basic" by design:
 - New windows start in the directory moerx was started from, not in the
   current pane's directory.
 - Resizing does not reflow existing text.
+- Session dimensions are clamped to 1,000 columns and 1,000 rows. Numeric
+  escape parameters saturate at the C integer limit; cursor movement and line
+  operations are bounded by the screen and retained history. Invalid UTF-8
+  is replaced with the replacement character. Allocation arithmetic that
+  exceeds representable sizes terminates with a numeric-limit error.
 
 ## Build notes
 
