@@ -581,9 +581,12 @@ static void em_sgr(Pane *p, int *ps, int n) {
                 i += 2;
             } else if (ps[i + 1] == 2 && i + 4 < n) {
                 int r = ps[i + 2], g = ps[i + 3], b = ps[i + 4];
-                if (r < 0) r = 0; if (r > 255) r = 255;
-                if (g < 0) g = 0; if (g > 255) g = 255;
-                if (b < 0) b = 0; if (b > 255) b = 255;
+                if (r < 0) r = 0;
+                if (r > 255) r = 255;
+                if (g < 0) g = 0;
+                if (g > 255) g = 255;
+                if (b < 0) b = 0;
+                if (b > 255) b = 255;
                 int32_t col = RGB_FLAG | (r << 16) | (g << 8) | b;
                 if (target == 0) p->pen.fg = col;
                 else p->pen.bg = col;
@@ -1558,10 +1561,12 @@ static int valid_session_name(const char *s) {
 static void make_socket_path(const char *name, char *out, size_t n) {
     char dir[PATH_MAX];
     socket_dir(dir, sizeof dir);
-    snprintf(out, n, "%s/%s.sock", dir, name);
-    if (strlen(out) >= 100) {
-        snprintf(out, n, "/tmp/moerx-%u/%s.sock", (unsigned)getuid(), name);
+    /* Select the fallback before formatting, so a long runtime directory
+       cannot truncate the socket path. Session names are limited to 48 bytes. */
+    if (strlen(dir) + strlen(name) + 6 >= 100) {
+        snprintf(dir, sizeof dir, "/tmp/moerx-%u", (unsigned)getuid());
     }
+    snprintf(out, n, "%.99s/%.48s.sock", dir, name);
 }
 
 static void client_message(Client *c, const char *fmt, ...) {
@@ -3541,7 +3546,13 @@ static void server_start(const char *path, const char *name, int readyfd, int sh
     struct sockaddr_un saun;
     memset(&saun, 0, sizeof saun);
     saun.sun_family = AF_UNIX;
-    snprintf(saun.sun_path, sizeof saun.sun_path, "%s", path);
+    size_t path_len = strlen(path);
+    if (path_len >= sizeof saun.sun_path) {
+        close(lfd);
+        server_fail(readyfd, "socket path", ENAMETOOLONG);
+        _exit(1);
+    }
+    memcpy(saun.sun_path, path, path_len + 1);
     unlink(path);
     /* Protect the socket without imposing private file permissions on pane
        shells and their build output (rsync -a preserves those permissions). */
@@ -3632,7 +3643,13 @@ static int connect_session(const char *path) {
     struct sockaddr_un sa;
     memset(&sa, 0, sizeof sa);
     sa.sun_family = AF_UNIX;
-    snprintf(sa.sun_path, sizeof sa.sun_path, "%s", path);
+    size_t path_len = strlen(path);
+    if (path_len >= sizeof sa.sun_path) {
+        close(fd);
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    memcpy(sa.sun_path, path, path_len + 1);
     if (connect(fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
         close(fd);
         return -1;
