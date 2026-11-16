@@ -304,8 +304,8 @@ builds with gcc on Linux and with clang on FreeBSD.
 
 ## Authors
 
-Armin Jenewein - <a@bsd.pm> - Founder
-Johannes Findeisen - <you@hanez.org> - Contributor
+- Armin Jenewein - <a@bsd.pm> - Founder
+- Johannes Findeisen - <you@hanez.org> - Contributor
 
 ## License
 
