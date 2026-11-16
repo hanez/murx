@@ -12,8 +12,8 @@ make -B CC=clang
 ./moerx -s bottom work             # show the session status line at the bottom
 ./moerx --status bottom work       # same as -s bottom
 ./moerx --no-cwd work              # show [moerx] instead of the directory
+./moerx --no-cwd --no-moerx work   # do not show [moerx] instead of the directory
 ./moerx --no-clock work            # hide the status bar clock
-./moerx --no-clock --no-moerx work # hide clock and [moerx]
 ./moerx --no-hostname work         # hide the hostname: prefix in window titles
 ./moerx --help                     # all shortcuts
 ```
