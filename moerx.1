@@ -1,0 +1,434 @@
+.TH MOERX 1 "November 2026" "moerx" "User Commands"
+.SH NAME
+moerx \- small persistent terminal multiplexer
+.SH SYNOPSIS
+.B moerx
+.RB [ \-p " letter"]
+.RB [ \-s " top|bottom"]
+.RB [ \-\-no\-cwd ]
+.RB [ \-\-no\-clock ]
+.RB [ \-\-no\-moerx ]
+.RB [ \-\-no\-hostname ]
+.RB [ \-\- ]
+.RI [ session ]
+.br
+.B moerx
+.BR \-h " | " \-\-help
+.SH DESCRIPTION
+.B moerx
+runs shells and terminal programs in windows and split panes.
+It attaches to the named session, starting a server if necessary.
+The default session name is
+.BR 0 .
+Each session has its own server and Unix socket.
+Detaching leaves programs running; run the same command to reattach.
+The session ends when its last pane exits or its server is killed.
+.PP
+Multiple clients may attach simultaneously and share windows and the active
+pane. Each client has its own prefix, menus, lock and scrollback view.
+There is no configuration file or command language.
+.PP
+Options precede the session name. Names contain 1 to 48 letters, digits,
+hyphens or underscores. Use
+.B \-\-
+before a name beginning with a hyphen.
+.SH OPTIONS
+.TP
+.BR \-p " letter, " \-\-prefix " letter"
+Choose this client's control prefix. Letters a through z are accepted,
+case-insensitively; a means Ctrl-A and x means Ctrl-X.
+The default is Ctrl-A. The old C-x argument syntax is not accepted.
+Repeat this option when reattaching, or set a shell alias.
+Other clients may choose different prefixes.
+.TP
+.BR \-s " top|bottom, " \-\-status " top|bottom"
+Place the status line at the top or bottom.
+New sessions default to top. An explicit choice changes an existing session
+for all clients. Omitting this option preserves the session's position.
+Prompts and messages follow the status line.
+.TP
+.B \-\-no\-cwd
+Show [moerx] instead of the current directory at the left of the status line.
+.TP
+.B \-\-no\-clock
+Hide the status clock.
+.TP
+.B \-\-no\-moerx
+Hide the [moerx] label when the directory is disabled with
+.BR \-\-no\-cwd .
+This does not hide an enabled directory or require the clock to be disabled.
+.TP
+.B \-\-no\-hostname
+Hide the hostname: prefix in window names and the outer terminal title.
+.TP
+.BR \-h ", " \-\-help
+Print usage and keyboard shortcuts, then exit.
+.PP
+The four
+.B \-\-no\-*
+options apply only when creating a session; they do not change a running server.
+.SH KEY BINDINGS
+Every binding below starts with the prefix: press Ctrl-A, release it,
+then press the remaining key. Substitute your chosen prefix throughout,
+including both keys of the last-window binding.
+Prefix then a sends the chosen control prefix literally to the pane.
+Doubling the prefix switches to the last window and takes precedence over
+other control-key bindings. With Ctrl-X as prefix, Ctrl-X a sends Ctrl-X,
+Ctrl-X Ctrl-X switches windows and Ctrl-X x locks the client.
+Other Ctrl-A input is passed to the pane when a different prefix is selected.
+
+.TP
+.B Ctrl\-A a
+send a literal Ctrl\-A to the pane.
+
+.TP
+.B Ctrl\-A c, Ctrl\-A Ctrl\-C
+new window.
+
+.TP
+.B Ctrl\-A n, Ctrl\-A Space, Ctrl\-A Ctrl\-N, Ctrl\-A Ctrl\-@
+next window.
+
+.TP
+.B Ctrl\-A p, Ctrl\-A Ctrl\-P, Ctrl\-A Backspace
+previous window.
+
+.TP
+.B Ctrl\-A Ctrl\-A
+last window.
+
+.TP
+.B Ctrl\-A w, Ctrl\-A Ctrl\-W, Ctrl\-A "
+window menu (Up/Down, j/k, Enter).
+
+.TP
+.B Ctrl\-A A
+temporarily rename window (until the next automatic name refresh).
+
+.TP
+.B Ctrl\-A 0 ... Ctrl\-A 9
+select window by its number in the status line.
+
+.TP
+.B Ctrl\-A \-
+split top/bottom.
+
+.TP
+.B Ctrl\-A |, Ctrl\-A %
+split left/right.
+
+.TP
+.B Ctrl\-A h Ctrl\-A j Ctrl\-A k Ctrl\-A l, Ctrl\-A Up/Down/Left/Right
+select pane.
+
+.TP
+.B Ctrl\-A Tab / Ctrl\-A Shift\-Tab
+next / previous pane.
+
+.TP
+.B Ctrl\-A o
+next pane.
+
+.TP
+.B Ctrl\-A Ctrl\-H Ctrl\-A Ctrl\-J Ctrl\-A Ctrl\-K Ctrl\-A Ctrl\-L
+resize pane (8/5/5/8).
+
+.TP
+.B Ctrl\-A x, Ctrl\-A Ctrl\-X
+lock the client.
+
+.TP
+.B Ctrl\-A Page Up, Ctrl\-A [
+enter scrollback (Page Up also scrolls one page).
+
+.TP
+.B Ctrl\-A K
+kill pane (confirm).
+
+.TP
+.B Ctrl\-A &
+kill window (confirm).
+
+.TP
+.B Ctrl\-A \e
+kill server (confirm).
+
+.TP
+.B Ctrl\-A r
+show Configuration Reloaded!.
+
+.TP
+.B Ctrl\-A R
+force the session to this client's terminal size.
+
+.TP
+.B Ctrl\-A *
+list attached clients.
+
+.TP
+.B Ctrl\-A d, Ctrl\-A Ctrl\-D
+detach.
+
+.PP
+Directional selection uses pane edges and prefers panes overlapping on the
+perpendicular axis, then the nearest pane in the requested direction.
+Resize steps are eight columns horizontally and five rows vertically.
+Ctrl-A k selects the pane above; Ctrl-A K kills a pane.
+Renaming a window is temporary until the next automatic name refresh.
+Ctrl-A r only displays a message: there is no configuration file to reload.
+.SS Menus, prompts and confirmations
+In menus use Up/Down or j/k and Enter; q or Escape closes the menu.
+In prompts use Enter to accept, Escape to cancel and Ctrl-U to clear.
+Confirm destructive actions with y, Y or Enter; n, N, Escape or Ctrl-C cancels.
+The client lock is cosmetic: Enter unlocks it without a password.
+.SH SCROLLBACK
+Ctrl-A Page Up freezes the active pane's history and moves up one page.
+Ctrl-A [ opens the view at the current screen.
+Use Page Up and Page Down without a prefix to browse;
+q, Escape, Enter or Ctrl-C returns to live output.
+.PP
+Each pane retains up to 2,000 normal-screen history lines in memory.
+Programs keep running while the view is frozen.
+Scrollback is private to each client and closes when its active pane or
+window changes. Alternate-screen programs such as editors do not add history;
+opening scrollback there shows only their current screen.
+Colors are retained; lines are clipped or padded to the pane width without reflow.
+Text selection and copying are not provided.
+.SH STATUS AND TERMINAL DISPLAY
+The left side shows [/path/to/directory]. On Linux the directory follows the
+active pane's foreground process, falling back to its shell and then the
+session's starting directory. Other systems use the starting directory unless
+a shell reports a path. Local HOME paths are abbreviated with ~.
+Long paths end in dots to leave space for the window list and clock;
+the label is hidden if fewer than four columns remain.
+.PP
+The window list is right-aligned. Each entry contains its number and name;
+* marks the current window and a trailing hyphen marks the previous window.
+Names follow hostname:program for each window's active foreground job,
+including inactive windows, and refresh within one second.
+Pipelines use the foreground process group leader's name.
+Returning to the shell restores its name.
+Linux uses /proc; other systems use ps.
+The right side shows HH:MM:SS, refreshed every second.
+.PP
+The outer terminal title follows [moerx] hostname:program.
+Hostnames are shortened at the first dot.
+Panes have no title rows; only splits have separator lines.
+The status uses colour12, accents colour14 and the current window colour11.
+Borders use colour8 on the terminal's default background.
+Messages use foreground colour6 and background colour8.
+.PP
+UTF-8, wide characters, application cursor keys, 256 colors and alternate
+screens are supported. Output uses 256-color escapes, or truecolor when
+COLORTERM advertises truecolor and TERM does not identify screen, tmux or linux.
+Otherwise truecolor is mapped to the nearest xterm-256 entry.
+.SH SESSION SIZE
+The most recently attached or resized client determines the session size,
+with a minimum of 20 columns and 5 rows.
+Larger clients center the session; smaller clients show its top-left portion.
+Ctrl-A R forces the session to the current client's terminal size.
+Ctrl-A * lists attached clients for size diagnostics.
+.PP
+Terminal size changes are checked every 250 milliseconds as well as on SIGWINCH.
+Resizing does not reflow existing text.
+.SH REMOTE SHELL INTEGRATION
+SSH does not expose remote foreground programs or working directories locally.
+Configure the remote shell to send terminal reports using one of the examples
+below. Reload the shell configuration or open a new SSH shell afterward.
+Restart session servers after upgrading moerx to gain newly added features.
+.PP
+OSC 0 or OSC 2 titles of the form hostname:program update the SSH window name.
+Use a hostname containing only letters, digits, dots, underscores or hyphens,
+and a program basename without whitespace, slashes or colons.
+Without a matching report, the name stays local-hostname:ssh.
+Structured remote titles are retained for the SSH job even if a program
+subsequently sends an unstructured title.
+.PP
+Directories may be reported using OSC 7:
+.nf
+ESC ] 7 ; file://host/percent-encoded-path BEL
+.fi
+or using the moerx-specific form:
+.nf
+ESC ] 777 ; moerx-cwd ; /absolute/path BEL
+ESC ] 777 ; moerx-cwd ; ~/relative/to/remote/home BEL
+.fi
+The spaces above separate fields for readability and are not transmitted.
+ESC backslash also terminates an OSC report.
+Standard OSC 7 paths are percent-decoded and displayed as absolute paths;
+the moerx-specific form preserves remote ~ abbreviations.
+Reports are associated with the foreground job that sent them.
+Disconnecting SSH restores the local shell's path and name.
+With splits the window and status follow the active pane.
+.SS Zsh
+Add the following to ~/.zshrc on the remote host.
+The preexec hook reports the first command of a pipeline;
+precmd restores the shell name and reports the directory after cd.
+.nf
+.ft CR
+if [[ \-n $SSH_CONNECTION ]]; then
+    autoload \-Uz add\-zsh\-hook
+    moerx_ssh_title() {
+        local program=${1:t}
+        printf '\e033]2;%s:%s\e007' "${HOST%%.*}" "$program"
+        local directory=$PWD
+        if [[ $directory == "$HOME" ]]; then
+            directory='~'
+        elif [[ $directory == "$HOME/"* ]]; then
+            directory="~/${directory#"$HOME/"}"
+        fi
+        printf '\e033]777;moerx\-cwd;%s\e007' "$directory"
+    }
+    moerx_ssh_preexec() {
+        local \-a words
+        words=(${(z)1})
+        moerx_ssh_title "${(Q)words[1]}"
+    }
+    moerx_ssh_precmd() { moerx_ssh_title zsh; }
+    add\-zsh\-hook preexec moerx_ssh_preexec
+    add\-zsh\-hook precmd moerx_ssh_precmd
+fi
+
+.ft
+.fi
+.SS Bash
+Add the following to ~/.bashrc on the remote host.
+It preserves string and array PROMPT_COMMAND values and avoids duplicate
+installation when sourced again. It installs a DEBUG trap: if an existing
+framework such as bash-preexec already owns that trap, integrate the functions
+with that framework instead of replacing its trap.
+Do not enable function tracing (set -T) for these hooks.
+.nf
+.ft CR
+if [[ $\- == *i* && \-n $SSH_CONNECTION && \-z ${moerx_ssh_installed\-} ]]; then
+    moerx_ssh_title() {
+        local program=$1 directory=$PWD
+        program=${program##*/}
+        printf '\e033]2;%s:%s\e007' "${HOSTNAME%%.*}" "$program"
+        if [[ $directory == "$HOME" ]]; then
+            directory='~'
+        elif [[ $directory == "$HOME/"* ]]; then
+            directory="~/${directory#"$HOME/"}"
+        fi
+        printf '\e033]777;moerx\-cwd;%s\e007' "$directory"
+    }
+    moerx_ssh_preexec() {
+        if [[ ${moerx_ssh_ready\-0} == 1 && $1 != moerx_ssh_precmd ]]; then
+            moerx_ssh_ready=0
+            local program rest
+            read \-r program rest <<< "$1"
+            # Strip quotes around a simple command name without evaluating it.
+            program=${program#\e"}; program=${program%\e"}
+            program=${program#\e'}; program=${program%\e'}
+            moerx_ssh_title "$program"
+        fi
+        return 0
+    }
+    moerx_ssh_precmd() {
+        local last_status=$?
+        moerx_ssh_title bash
+        moerx_ssh_ready=1
+        return "$last_status"
+    }
+    # Keep existing prompt commands, and run our prompt hook last.
+    if [[ $(declare \-p PROMPT_COMMAND 2>/dev/null) == 'declare \-a '* ]]; then
+        PROMPT_COMMAND+=(moerx_ssh_precmd)
+    else
+        PROMPT_COMMAND=("${PROMPT_COMMAND\-}" moerx_ssh_precmd)
+    fi
+    trap 'moerx_ssh_preexec "$BASH_COMMAND"' DEBUG
+    moerx_ssh_installed=1
+fi
+
+.ft
+.fi
+
+.PP
+The Bash command name is the first whitespace-delimited word of the first
+simple command. Aliases, assignments, compound commands and quoted executable
+paths containing spaces may display differently from the Zsh hook.
+Command text is never evaluated by these hooks.
+Both examples emit invisible terminal updates rather than visible command lines.
+.SH ENVIRONMENT
+.TP
+.B SHELL
+Login shell started in new panes. If unset or empty, /usr/bin/zsh is used
+when executable, otherwise /bin/sh.
+Panes receive TERM=screen-256color and inherit the server's environment and umask.
+.TP
+.B HOME
+Home directory abbreviated as ~ in locally discovered status paths.
+.TP
+.B XDG_RUNTIME_DIR
+Preferred parent directory for session sockets.
+.TP
+.B TMPDIR
+Socket directory parent if XDG_RUNTIME_DIR is unset or empty;
+/tmp is used if neither is set.
+.TP
+.BR TERM ", " COLORTERM
+Describe the attaching terminal and affect truecolor output.
+.TP
+.B SSH_CONNECTION
+Used by the example shell hooks to enable reporting in remote SSH shells.
+.TP
+.B LC_CTYPE
+Along with the standard locale environment, controls character width handling.
+.SH FILES
+.TP
+.I $XDG_RUNTIME_DIR/moerx-<uid>/<session>.sock
+Per-user session socket. If XDG_RUNTIME_DIR is unavailable, the parent comes
+from TMPDIR or /tmp. Long socket paths fall back to /tmp/moerx-<uid>/.
+Socket permissions are restricted to the owner.
+.PP
+There is no configuration file and no on-disk scrollback.
+.SH EXAMPLES
+Start or reattach to the default session:
+.PP
+.nf
+moerx
+.fi
+.PP
+Use a named session, Ctrl-X prefix and bottom status:
+.PP
+.nf
+moerx \-\-prefix x \-\-status bottom work
+.fi
+.PP
+Start a session with a minimal status display:
+.PP
+.nf
+moerx \-\-no\-cwd \-\-no\-moerx \-\-no\-clock \-\-no\-hostname minimal
+.fi
+.PP
+Detach with Ctrl-A d (or Ctrl-X d with the alternate prefix), then run the
+same session command to reattach. Exit the last pane's shell to end the session,
+or use the confirmed kill-pane, kill-window or kill-server bindings.
+.SH EXIT STATUS
+.TP
+.B 0
+Normal client exit, including detaching, or successful help output.
+.TP
+.B 1
+Unable to start or attach to a session, or client terminal setup failed.
+.TP
+.B 2
+Invalid command-line options or session name.
+.PP
+This is the client's status, not the exit status of programs running in panes.
+.SH LIMITATIONS
+No configuration file, command prompt, scripting interface, plugins, pane zoom,
+activity monitoring, clock mode or scrollback copying is provided.
+Mouse reporting is not negotiated with the outer terminal.
+The lock screen is not a security mechanism.
+New windows and panes start in the server's original working directory,
+not the active pane's current directory.
+There is one resize step per key press, without a dedicated repeat mode.
+At most 60 panes may be created in a window.
+Killing a server affects only its own named session.
+.SH AUTHORS
+Armin Jenewein and Johannes Findeisen.
+.SH SEE ALSO
+.BR bash (1),
+.BR ssh (1),
+.BR zsh (1)

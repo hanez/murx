@@ -20,6 +20,13 @@ make -B CC=clang
 
 Detach with `Ctrl-A d`. Run `moerx` again to reattach.
 
+The [moerx(1) manual](moerx.1) covers all options, shortcuts, session behavior,
+and remote shell setup. Read it locally with `man ./moerx.1`. Run
+`make install` to install both the program and manual, then use `man moerx`.
+The default prefix is `/usr/local`; override `PREFIX`, `BINDIR` or `MANDIR`
+as needed. `DESTDIR` supports staged installs, and `make uninstall` removes
+the installed program and manual.
+
 Every shortcut is a chain that starts with the prefix (by default `Ctrl-A`):
 press it, release it, then press the rest of the chain.
 
