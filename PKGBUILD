@@ -7,18 +7,19 @@ arch=('x86_64' 'aarch64')
 url='https://codeberg.org/armin/murx'
 license=('Apache-2.0')
 depends=('glibc')
+makedepends=('clang')
 source=('murx.c' 'Makefile' 'murx.1' 'README.md' 'LICENSE')
 sha256sums=(
     '921e2c446c2ba83192b883411bf2d9686da028374c8a10125086a97aa28e61f4'
     '1d77a97ff77ce6d876baef98e22b06cfa2109a4ae65cef8b75a91df4c02ad8ac'
     'f07830b93f78674956a17b108738d52c3d3efd58f431dc29f137cc339d625ee5'
-    '8f658ba4ffc508e4fb3d267504d40e7fb9227189626a864a2cd644d3f8c976b0'
+    '664670a1ebba0e9ca7d41e84c95278deb28dc9e2e6010e86cc10ad5df797cfc7'
     '31c5556be4cdd9bf52bb55f18ead0c68a4f0e793c2c2dab0a2a2c6d92407d0d4'
 )
 
 build() {
     cd "$srcdir"
-    make CC="${CC:-cc}" CFLAGS="$CFLAGS -std=c99 -Wall -Wextra"
+    make CC=clang CFLAGS="$CFLAGS -std=c99 -Wall -Wextra"
 }
 
 check() {

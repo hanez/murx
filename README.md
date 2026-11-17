@@ -361,8 +361,8 @@ This is "very basic" by design:
 
 ## Build notes
 
-Requires a C99 compiler and POSIX. Tested on macOS with clang; the code also
-builds with gcc on Linux and with clang on FreeBSD.
+Requires Clang and POSIX. Build with `make CC=clang`. GCC builds have known
+runtime issues; use Clang even if GCC compiles the source successfully.
 
 ## Linux packages
 
@@ -370,7 +370,9 @@ The root directory includes [APKBUILD](APKBUILD) for Alpine Linux and
 [PKGBUILD](PKGBUILD) for Arch Linux. Both build the local source files rather
 than downloading a release. Version `0.20261116` identifies an unreleased
 snapshot; update the version and release fields when packaging a newer snapshot.
-The packages install under `/usr`, including the manual, README and license.
+Both recipes declare Clang as a build dependency and explicitly compile with
+`CC=clang`. The packages install under `/usr`, including the manual, README
+and license.
 
 On Alpine, install `alpine-sdk`, configure your abuild signing key with
 `abuild-keygen -a -i`, and run as a regular user with abuild configured:
