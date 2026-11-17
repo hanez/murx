@@ -396,11 +396,13 @@ This builds the package and installs it through pacman. The recipe lists
 `x86_64` and `aarch64`; builds run on the current architecture.
 
 After changing any packaged source file (`murx.c`, `Makefile`, `murx.1`,
-`README.md` or `LICENSE`), refresh recipe checksums with `abuild checksum`
+`README.md`, `LICENSE` or `AUTHORS`), refresh recipe checksums with `abuild checksum`
 on Alpine and `updpkgsums` (from `pacman-contrib`) on Arch. Neither recipe
 requires a test suite; its check step runs `murx --help` as a smoke check.
 
 ## Authors
+
+See [AUTHORS](AUTHORS) for project credits.
 
 - Armin Jenewein - <a@bsd.pm> - Founder
 - Johannes Findeisen - <you@hanez.org> - Contributor
