@@ -1,18 +1,18 @@
 # Local source snapshot; refresh checksums with `updpkgsums` after edits.
-pkgname=moerx
+pkgname=murx
 pkgver=0.20261116
 pkgrel=1
 pkgdesc='Small persistent terminal multiplexer'
 arch=('x86_64' 'aarch64')
-url='https://codeberg.org/armin/moerx'
+url='https://codeberg.org/armin/murx'
 license=('Apache-2.0')
 depends=('glibc')
-source=('moerx.c' 'Makefile' 'moerx.1' 'README.md' 'LICENSE')
+source=('murx.c' 'Makefile' 'murx.1' 'README.md' 'LICENSE')
 sha256sums=(
-    '6269f68e371de276308b25e4b3d3acadcd2eaec0ba86537571d2cf80ade5e97b'
-    'ad08bd0acd671f1f1716250528c2d4e5acc78a83bf55fcebdf41fa101fbb71d5'
-    '38b60956c86513c53bd129cb3541b28ac161c17d56c58441e8904cba7ea501d8'
-    '03a41aae42949ea1ed840d56ff66e0de0d0b1e54f1a457709ba2bf84ffaee33b'
+    '921e2c446c2ba83192b883411bf2d9686da028374c8a10125086a97aa28e61f4'
+    '1d77a97ff77ce6d876baef98e22b06cfa2109a4ae65cef8b75a91df4c02ad8ac'
+    'f07830b93f78674956a17b108738d52c3d3efd58f431dc29f137cc339d625ee5'
+    '8f658ba4ffc508e4fb3d267504d40e7fb9227189626a864a2cd644d3f8c976b0'
     '31c5556be4cdd9bf52bb55f18ead0c68a4f0e793c2c2dab0a2a2c6d92407d0d4'
 )
 
@@ -23,7 +23,7 @@ build() {
 
 check() {
     cd "$srcdir"
-    ./moerx --help >/dev/null
+    ./murx --help >/dev/null
 }
 
 package() {

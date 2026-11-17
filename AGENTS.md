@@ -1,12 +1,12 @@
-# moerx project instructions
+# murx project instructions
 
-moerx is a deliberately small terminal multiplexer: one C99 source file
-(`moerx.c`), no dependencies, no config file.
+murx is a deliberately small terminal multiplexer: one C99 source file
+(`murx.c`), no dependencies, no config file.
 
 ## Build
 
 ```sh
-make          # cc -O2 -std=c99 -Wall -Wextra -o moerx moerx.c
+make          # cc -O2 -std=c99 -Wall -Wextra -o murx murx.c
 make clean
 ```
 
@@ -16,7 +16,7 @@ outside the repo for geometry/logic checks; do not leave test files behind.
 
 ## Conventions
 
-- Keep changes inside `moerx.c` where possible; the single-file design is
+- Keep changes inside `murx.c` where possible; the single-file design is
   intentional.
 - `README.md` is user-facing documentation. Update it when shortcuts, behavior,
   or limitations change.
@@ -40,7 +40,7 @@ outside the repo for geometry/logic checks; do not leave test files behind.
 
 ## Current work (2026-10-30)
 
-Reworked `select_pane_dir()` in `moerx.c` so `Ctrl-A h/j/k/l` and the arrow
+Reworked `select_pane_dir()` in `murx.c` so `Ctrl-A h/j/k/l` and the arrow
 keys choose the pane exactly left/down/up/right:
 
 1. Only panes strictly beyond the active pane's edge in the requested direction

@@ -1,6 +1,6 @@
 /*
- * This file is part of moerx - An ultra-minimalist, single-file, terminal
- * multiplexer: https://codeberg.org/armin/moerx
+ * This file is part of murx - An ultra-minimalist, single-file, terminal
+ * multiplexer: https://codeberg.org/armin/murx
  *
  * Copyright 2026 Armin Jenewein <a@bsd.pm>
  * Licensed under the terms of the Apache-2.0 license.
@@ -28,12 +28,12 @@
 #endif
 
 /*
- * moerx - a very small terminal multiplexer
+ * murx - a very small terminal multiplexer
  *
  * One binary, no config file. Shortcuts and colours are hard-coded.
  *
- *   moerx [session]     attach to session (default "0"), or start it
- *   moerx -h|--help     show usage and all Ctrl-A shortcut chains
+ *   murx [session]     attach to session (default "0"), or start it
+ *   murx -h|--help     show usage and all Ctrl-A shortcut chains
  *
  * Pure C99 + POSIX (macOS / Linux / FreeBSD).
  */
@@ -120,7 +120,7 @@ static int send_msg(int fd, uint32_t type, const void *data, size_t len);
 /* ------------------------------------------------------------------ */
 
 static void range_error(void) {
-    fputs("moerx: numeric limit exceeded\n", stderr);
+    fputs("murx: numeric limit exceeded\n", stderr);
     exit(1);
 }
 
@@ -161,7 +161,7 @@ static unsigned short tty_dimension(int value) {
 static void *xmalloc(size_t n) {
     void *p = malloc(n);
     if (!p) {
-        fputs("moerx: out of memory\n", stderr);
+        fputs("murx: out of memory\n", stderr);
         exit(1);
     }
     return p;
@@ -170,7 +170,7 @@ static void *xmalloc(size_t n) {
 static void *xcalloc(size_t n, size_t sz) {
     void *p = calloc(1, size_mul(n, sz));
     if (!p) {
-        fputs("moerx: out of memory\n", stderr);
+        fputs("murx: out of memory\n", stderr);
         exit(1);
     }
     return p;
@@ -179,7 +179,7 @@ static void *xcalloc(size_t n, size_t sz) {
 static void *xrealloc(void *p, size_t n) {
     void *q = realloc(p, n);
     if (!q) {
-        fputs("moerx: out of memory\n", stderr);
+        fputs("murx: out of memory\n", stderr);
         exit(1);
     }
     return q;
@@ -205,7 +205,7 @@ static int parse_ulong_field(const char **text, unsigned long *out) {
 static long long now_ms(void) {
     struct timespec ts = { 0, 0 };
     if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0) {
-        perror("moerx: clock_gettime");
+        perror("murx: clock_gettime");
         exit(1);
     }
     if (ts.tv_sec < 0 || (uintmax_t)ts.tv_sec > (uintmax_t)(LLONG_MAX - MSG_TIME) / 1000 - 1)
@@ -261,7 +261,7 @@ typedef struct {
 #define A_ITALIC 0x04
 #define A_ULINE  0x08
 #define A_REV    0x10
-/* Internal marker: cell belongs to a moerx border, not pane content.
+/* Internal marker: cell belongs to a murx border, not pane content.
    Never emitted to the terminal. */
 
 static Cell blank_cell(void) {
@@ -934,16 +934,17 @@ static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
 
 static int pane_remote_title(Pane *p, pid_t pid);
 
-/* OSC 7 uses a percent-encoded file URI. The moerx-specific form also
+/* OSC 7 uses a percent-encoded file URI. The murx-specific form also
    accepts a shell-shortened path so remote $HOME can be displayed as ~. */
 static void em_osc_cwd(Pane *p) {
     const char *path = NULL;
     int uri = 0;
+    static const char cwd_prefix[] = "777;murx-cwd;";
     if (strncmp(p->seq, "7;file://", 9) == 0) {
         path = strchr(p->seq + 9, '/');
         uri = 1;
-    } else if (strncmp(p->seq, "777;moerx-cwd;", 14) == 0) {
-        path = p->seq + 14;
+    } else if (strncmp(p->seq, cwd_prefix, sizeof cwd_prefix - 1) == 0) {
+        path = p->seq + sizeof cwd_prefix - 1;
     }
     if (!path || (*path != '/' &&
         !(*path == '~' && (!path[1] || path[1] == '/')))) return;
@@ -974,12 +975,12 @@ static void em_osc_cwd(Pane *p) {
 static void em_osc_done(Pane *p) {
     p->seq[p->seqlen] = '\0';
     em_osc_cwd(p);
-    if (strcmp(p->seq, "777;moerx-root;0") == 0 ||
-        strcmp(p->seq, "777;moerx-root;1") == 0) {
+    if (strcmp(p->seq, "777;murx-root;0") == 0 ||
+        strcmp(p->seq, "777;murx-root;1") == 0) {
         pid_t pid = tcgetpgrp(p->fd);
         if (pid <= 0) pid = tcgetpgrp(p->tty_fd);
         if (pid > 0) {
-            p->reported_root = p->seq[15] == '1';
+            p->reported_root = p->seq[sizeof "777;murx-root;" - 1] == '1';
             p->reported_root_pgrp = pid;
         }
     }
@@ -1225,6 +1226,14 @@ struct Client {
     Client *next;
 };
 
+/* Display choices are set when a session starts. */
+typedef struct {
+    int show_cwd;
+    int show_clock;
+    int show_murx;
+    int show_hostname;
+} DisplayOptions;
+
 struct Session {
     char name[64];
     char sock_path[PATH_MAX];
@@ -1233,10 +1242,7 @@ struct Session {
 
     int w, h;
     int status_bottom;
-    int show_cwd;
-    int show_clock;
-    int show_moerx;
-    int show_hostname;
+    DisplayOptions display;
     Window *windows;
     Window *cur, *last;
     int nwin;
@@ -1367,13 +1373,13 @@ static int window_update_name(Session *s, Window *w) {
     w->privileged = privileged;
     char next[sizeof w->name];
     if (strcmp(base, "ssh") == 0 && p->remote_title_pgrp == pid && p->remote_title[0]) {
-        if (s->show_hostname) {
+        if (s->display.show_hostname) {
             snprintf(next, sizeof next, "%s", p->remote_title);
         } else {
             const char *colon = strchr(p->remote_title, ':');
             snprintf(next, sizeof next, "%s", colon ? colon + 1 : p->remote_title);
         }
-    } else if (s->show_hostname) {
+    } else if (s->display.show_hostname) {
         char host[256];
         if (gethostname(host, sizeof host) < 0) snprintf(host, sizeof host, "localhost");
         host[sizeof host - 1] = '\0';
@@ -1653,7 +1659,7 @@ static Window *window_new(Session *s, const char *name) {
     base = base ? base + 1 : shell;
     if (name) {
         snprintf(w->name, sizeof w->name, "%s", name);
-    } else if (s->show_hostname) {
+    } else if (s->display.show_hostname) {
         char host[256];
         if (gethostname(host, sizeof host) < 0) snprintf(host, sizeof host, "localhost");
         host[sizeof host - 1] = '\0';
@@ -1705,11 +1711,15 @@ static void session_layout(Session *s) {
 /* session helpers                                                    */
 /* ------------------------------------------------------------------ */
 
+static void socket_dir_at(const char *base, char *out, size_t n) {
+    snprintf(out, n, "%s/murx-%u", base, (unsigned)getuid());
+}
+
 static void socket_dir(char *out, size_t n) {
     const char *base = getenv("XDG_RUNTIME_DIR");
     if (!base || !*base) base = getenv("TMPDIR");
     if (!base || !*base) base = "/tmp";
-    snprintf(out, n, "%s/moerx-%u", base, (unsigned)getuid());
+    socket_dir_at(base, out, n);
 }
 
 static int valid_session_name(const char *s) {
@@ -1726,7 +1736,7 @@ static void make_socket_path(const char *name, char *out, size_t n) {
     /* Select the fallback before formatting, so a long runtime directory
        cannot truncate the socket path. Session names are limited to 48 bytes. */
     if (strlen(dir) + strlen(name) + 6 >= 100) {
-        snprintf(dir, sizeof dir, "/tmp/moerx-%u", (unsigned)getuid());
+        socket_dir_at("/tmp", dir, sizeof dir);
     }
     snprintf(out, n, "%.99s/%.48s.sock", dir, name);
 }
@@ -2002,7 +2012,7 @@ static void status_draw(Grid *g, Session *s, Client *c) {
     clockbuf[0] = '\0';
     int right_len = 0;
     int rx = s->w;
-    if (s->show_clock) {
+    if (s->display.show_clock) {
         time_t t = time(NULL);
         struct tm tmv;
         if (localtime_r(&t, &tmv) &&
@@ -2029,12 +2039,12 @@ static void status_draw(Grid *g, Session *s, Client *c) {
     int left_len = 0;
     {
         char left[PATH_MAX];
-        if (s->show_cwd) {
+        if (s->display.show_cwd) {
             if (!status_cwd(s, left, sizeof left))
                 status_cwd_home(left, sizeof left);
             left_len = status_cwd_draw(g, y, left, start);
-        } else if (s->show_moerx) {
-            snprintf(left, sizeof left, "moerx");
+        } else if (s->display.show_murx) {
+            snprintf(left, sizeof left, "murx");
             left_len = status_cwd_draw(g, y, left, start);
         } else {
             left_len = 0;
@@ -2086,7 +2096,7 @@ static void status_draw(Grid *g, Session *s, Client *c) {
         }
     }
 
-    if (s->show_clock) {
+    if (s->display.show_clock) {
         /* keep the clock visible even if a message or window list is long */
         status_right_draw(g, rx, y, clockbuf);
     }
@@ -2350,7 +2360,7 @@ static void draw_frame(Session *s, Client *c, Grid *scr) {
     }
     {
         char title[160];
-        snprintf(title, sizeof title, "[moerx] %s", s->cur ? s->cur->name : "moerx");
+        snprintf(title, sizeof title, "[murx] %s", s->cur ? s->cur->name : "murx");
         if (strcmp(title, c->title) != 0) {
             buf_printf(&b, "\x1b]2;%s\x07", title);
             snprintf(c->title, sizeof c->title, "%s", title);
@@ -2835,7 +2845,7 @@ static void client_lock(Client *c) {
     c->locked = 1;
     c->mode = 0;
     c->prefix_pending = 0;
-    const char *text = "[moerx] locked - press Enter to unlock";
+    const char *text = "[murx] locked - press Enter to unlock";
     int tw = text_width(text);
     int x = (c->cols - tw) / 2;
     int y = c->rows / 2;
@@ -3675,7 +3685,7 @@ static void run_server(Session *s) {
     }
 
     char msg[128];
-    snprintf(msg, sizeof msg, "[moerx: session \"%s\" server exited]", s->name);
+    snprintf(msg, sizeof msg, "[murx: session \"%s\" server exited]", s->name);
     server_notify_all(s, msg);
     free(panes);
 }
@@ -3715,7 +3725,7 @@ static void server_fail(int readyfd, const char *stage, int err) {
     close(readyfd);
 }
 
-static void server_start(const char *path, const char *name, int readyfd, int show_cwd, int show_clock, int show_moerx, int show_hostname) {
+static void server_start(const char *path, const char *name, int readyfd, const DisplayOptions *display) {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
     signal(SIGCHLD, SIG_DFL);
@@ -3769,10 +3779,7 @@ static void server_start(const char *path, const char *name, int readyfd, int sh
     s->w = 80;
     s->h = 24;
     s->running = 1;
-    s->show_cwd = show_cwd;
-    s->show_clock = show_clock;
-    s->show_moerx = show_moerx;
-    s->show_hostname = show_hostname;
+    s->display = *display;
     s->last_status = now_ms();
 
     Window *w = window_new(s, NULL);
@@ -3852,7 +3859,7 @@ static int session_name_compare(const void *a, const void *b) {
 static int list_sessions(void) {
     char dirs[2][PATH_MAX];
     socket_dir(dirs[0], sizeof dirs[0]);
-    snprintf(dirs[1], sizeof dirs[1], "/tmp/moerx-%u", (unsigned)getuid());
+    socket_dir_at("/tmp", dirs[1], sizeof dirs[1]);
     char (*names)[49] = NULL;
     size_t count = 0;
     int result = 0;
@@ -3861,7 +3868,7 @@ static int list_sessions(void) {
         DIR *dir = opendir(dirs[i]);
         if (!dir) {
             if (errno != ENOENT) {
-                fprintf(stderr, "moerx: cannot list %s: %s\n", dirs[i], strerror(errno));
+                fprintf(stderr, "murx: cannot list %s: %s\n", dirs[i], strerror(errno));
                 result = 1;
             }
             continue;
@@ -3872,7 +3879,7 @@ static int list_sessions(void) {
             entry = readdir(dir);
             if (!entry) {
                 if (errno) {
-                    fprintf(stderr, "moerx: cannot read %s: %s\n", dirs[i], strerror(errno));
+                    fprintf(stderr, "murx: cannot read %s: %s\n", dirs[i], strerror(errno));
                     result = 1;
                 }
                 break;
@@ -3926,14 +3933,14 @@ static int ensure_socket_dir(void) {
     if (mkdir(dir, 0700) < 0 && errno != EEXIST) return -1;
     chmod(dir, 0700);
     char alt[PATH_MAX];
-    snprintf(alt, sizeof alt, "/tmp/moerx-%u", (unsigned)getuid());
+    socket_dir_at("/tmp", alt, sizeof alt);
     if (strcmp(alt, dir) != 0) {
         if (mkdir(alt, 0700) == 0) chmod(alt, 0700);
     }
     return 0;
 }
 
-static int spawn_server(const char *path, const char *name, int show_cwd, int show_clock, int show_moerx, int show_hostname) {
+static int spawn_server(const char *path, const char *name, const DisplayOptions *display) {
     if (ensure_socket_dir() < 0) return -1;
     char dir[PATH_MAX], lockpath[PATH_MAX + 64];
     socket_dir(dir, sizeof dir);
@@ -3981,7 +3988,7 @@ static int spawn_server(const char *path, const char *name, int show_cwd, int sh
             if (dn > 2) close(dn);
         }
         close(lock);
-        server_start(path, name, p[1], show_cwd, show_clock, show_moerx, show_hostname);
+        server_start(path, name, p[1], display);
         _exit(1);
     }
     close(p[1]);
@@ -4075,7 +4082,7 @@ static int terminal_truecolor(void) {
 static int run_client(int fd, const char *name, unsigned char prefix, int status) {
     struct termios saved;
     if (tty_raw(&saved) < 0) {
-        fprintf(stderr, "moerx: not a terminal\n");
+        fprintf(stderr, "murx: not a terminal\n");
         return 1;
     }
 
@@ -4119,10 +4126,10 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
         g_winch_pipe[0] = g_winch_pipe[1] = -1;
         tty_restore(&saved);
         if (err == EPIPE || err == ECONNRESET) {
-            fprintf(stderr, "moerx: cannot attach to session '%s': server closed "
+            fprintf(stderr, "murx: cannot attach to session '%s': server closed "
                             "the connection (%s)\n", name, strerror(err));
         } else {
-            fprintf(stderr, "moerx: cannot attach to session '%s': %s\n",
+            fprintf(stderr, "murx: cannot attach to session '%s': %s\n",
                     name, strerror(err));
         }
         return 1;
@@ -4238,9 +4245,9 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
 
 static void print_help(FILE *out) {
     fprintf(out,
-        "usage: moerx [-p letter] [-s top|bottom] [--no-cwd] [--no-clock] [--no-moerx] [--no-hostname] [session]\n"
-        "       moerx -l | --list-sessions\n"
-        "       moerx -h | --help\n"
+        "usage: murx [-p letter] [-s top|bottom] [--no-cwd] [--no-clock] [--no-murx] [--no-hostname] [session]\n"
+        "       murx -l | --list-sessions\n"
+        "       murx -h | --help\n"
         "\n"
         "Attach to a running session, or start it if it is not running.\n"
         "The session name defaults to \"0\".\n"
@@ -4252,7 +4259,7 @@ static void print_help(FILE *out) {
         "Without -s, keep the session position.\n"
         "Use --no-cwd to hide the current directory in the status bar.\n"
         "Use --no-clock to hide the clock in the status bar.\n"
-        "Use --no-moerx to hide [moerx] in the status bar when using --no-clock.\n"
+        "Use --no-murx to hide [murx] in the status bar when using --no-clock.\n"
         "Use --no-hostname to hide the hostname: prefix in window titles.\n"
         "\n"
         "Use -p x (or --prefix x) to choose Ctrl-X as this client's prefix.\n"
@@ -4328,10 +4335,7 @@ int main(int argc, char **argv) {
     int argi = 1;
     unsigned char prefix = DEFAULT_PREFIX;
     int status = 0;
-    int show_cwd = 1;
-    int show_clock = 1;
-    int show_moerx = 1;
-    int show_hostname = 1;
+    DisplayOptions display = {1, 1, 1, 1};
     int list = 0;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1]) {
         const char *option = argv[argi++];
@@ -4343,49 +4347,49 @@ int main(int argc, char **argv) {
         if (strcmp(option, "-l") == 0 || strcmp(option, "--list-sessions") == 0) {
             list = 1;
         } else if (strcmp(option, "--no-cwd") == 0) {
-            show_cwd = 0;
+            display.show_cwd = 0;
         } else if (strcmp(option, "--no-clock") == 0) {
-            show_clock = 0;
-        } else if (strcmp(option, "--no-moerx") == 0) {
-            show_moerx = 0;
+            display.show_clock = 0;
+        } else if (strcmp(option, "--no-murx") == 0) {
+            display.show_murx = 0;
         } else if (strcmp(option, "--no-hostname") == 0) {
-            show_hostname = 0;
+            display.show_hostname = 0;
         } else if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
             if (argi >= argc || !parse_prefix(argv[argi], &prefix)) {
-                fprintf(stderr, "moerx: %s requires a letter from a through z\n", option);
+                fprintf(stderr, "murx: %s requires a letter from a through z\n", option);
                 return 2;
             }
             argi++;
         } else if (strcmp(option, "-s") == 0 || strcmp(option, "--status") == 0) {
             if (argi >= argc || (strcmp(argv[argi], "top") != 0 &&
                                  strcmp(argv[argi], "bottom") != 0)) {
-                fprintf(stderr, "moerx: %s requires top or bottom\n", option);
+                fprintf(stderr, "murx: %s requires top or bottom\n", option);
                 return 2;
             }
             status = strcmp(argv[argi++], "bottom") == 0 ? 2 : 1;
         } else {
-            fprintf(stderr, "moerx: unknown option '%s'\n", option);
-            fprintf(stderr, "Try 'moerx --help' for more information.\n");
+            fprintf(stderr, "murx: unknown option '%s'\n", option);
+            fprintf(stderr, "Try 'murx --help' for more information.\n");
             return 2;
         }
     }
 
     if (list) {
         if (argi != argc) {
-            fprintf(stderr, "moerx: --list-sessions does not take a session name\n");
+            fprintf(stderr, "murx: --list-sessions does not take a session name\n");
             return 2;
         }
         return list_sessions();
     }
     if (argc - argi > 1) {
-        fprintf(stderr, "moerx: too many arguments\n");
-        fprintf(stderr, "Try 'moerx --help' for more information.\n");
+        fprintf(stderr, "murx: too many arguments\n");
+        fprintf(stderr, "Try 'murx --help' for more information.\n");
         return 2;
     }
     const char *name = argc - argi > 0 ? argv[argi] : "0";
     if (!valid_session_name(name)) {
-        fprintf(stderr, "moerx: bad session name '%s'\n", name);
-        fprintf(stderr, "Try 'moerx --help' for more information.\n");
+        fprintf(stderr, "murx: bad session name '%s'\n", name);
+        fprintf(stderr, "Try 'murx --help' for more information.\n");
         return 2;
     }
 
@@ -4393,9 +4397,9 @@ int main(int argc, char **argv) {
     make_socket_path(name, path, sizeof path);
 
     int fd = connect_session(path);
-    if (fd < 0) fd = spawn_server(path, name, show_cwd, show_clock, show_moerx, show_hostname);
+    if (fd < 0) fd = spawn_server(path, name, &display);
     if (fd < 0) {
-        fprintf(stderr, "moerx: cannot start or attach session '%s': %s\n",
+        fprintf(stderr, "murx: cannot start or attach session '%s': %s\n",
                 name, strerror(errno));
         return 1;
     }

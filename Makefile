@@ -5,21 +5,21 @@ PREFIX  ?= /usr/local
 BINDIR   = $(PREFIX)/bin
 MANDIR  ?= $(PREFIX)/share/man
 
-all: moerx
+all: murx
 
-moerx: moerx.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ moerx.c $(LDLIBS)
+murx: murx.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ murx.c $(LDLIBS)
 
-install: moerx moerx.1
+install: murx murx.1
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(MANDIR)/man1"
-	install -m 755 moerx "$(DESTDIR)$(BINDIR)/moerx"
-	install -m 644 moerx.1 "$(DESTDIR)$(MANDIR)/man1/moerx.1"
+	install -m 755 murx "$(DESTDIR)$(BINDIR)/murx"
+	install -m 644 murx.1 "$(DESTDIR)$(MANDIR)/man1/murx.1"
 
 uninstall:
-	rm -f "$(DESTDIR)$(BINDIR)/moerx"
-	rm -f "$(DESTDIR)$(MANDIR)/man1/moerx.1"
+	rm -f "$(DESTDIR)$(BINDIR)/murx"
+	rm -f "$(DESTDIR)$(MANDIR)/man1/murx.1"
 
 clean:
-	rm -f moerx
+	rm -f murx
 
 .PHONY: all install uninstall clean

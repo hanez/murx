@@ -1,36 +1,36 @@
-# moerx
+# murx
 
 A deliberately small terminal multiplexer. One C file, no config file, no
 dependencies.
 
 ```sh
 make -B CC=clang
-./moerx                          # session "0"
-./moerx work                     # separate named session
-./moerx -p x work                # use Ctrl-X as this client's prefix
-./moerx --prefix x work          # same as -p x
-./moerx -s bottom work           # show the session status line at the bottom
-./moerx --status bottom work     # same as -s bottom
-./moerx --no-cwd work            # show [moerx] instead of the directory
-./moerx --no-cwd --no-moerx work # do not show [moerx] instead of the directory
-./moerx --no-clock work          # hide the status bar clock
-./moerx --no-hostname work       # hide the hostname: prefix in window titles
-./moerx -l, --list-sessions      # list running sessions without attaching
-./moerx --help                   # all shortcuts
+./murx                          # session "0"
+./murx work                     # separate named session
+./murx -p x work                # use Ctrl-X as this client's prefix
+./murx --prefix x work          # same as -p x
+./murx -s bottom work           # show the session status line at the bottom
+./murx --status bottom work     # same as -s bottom
+./murx --no-cwd work            # show [murx] instead of the directory
+./murx --no-cwd --no-murx work # do not show [murx] instead of the directory
+./murx --no-clock work          # hide the status bar clock
+./murx --no-hostname work       # hide the hostname: prefix in window titles
+./murx -l, --list-sessions      # list running sessions without attaching
+./murx --help                   # all shortcuts
 ```
 
-Detach with `Ctrl-A d`. Run `moerx` again to reattach.
+Detach with `Ctrl-A d`. Run `murx` again to reattach.
 
-Use `moerx -l` or `moerx --list-sessions` to list running sessions, sorted by
+Use `murx -l` or `murx --list-sessions` to list running sessions, sorted by
 name, one per line. Listing works without a terminal and does not create or
 attach to a session. It checks the current user's runtime socket directory
 and `/tmp` fallback, skips stale sockets, and prints nothing when no sessions
-are running. Do not pass a session name with this option. Use `moerx name`
+are running. Do not pass a session name with this option. Use `murx name`
 to attach to a listed session.
 
-The [moerx(1) manual](moerx.1) covers all options, shortcuts, session behavior,
-and remote shell setup. Read it locally with `man ./moerx.1`. Run
-`make install` to install both the program and manual, then use `man moerx`.
+The [murx(1) manual](murx.1) covers all options, shortcuts, session behavior,
+and remote shell setup. Read it locally with `man ./murx.1`. Run
+`make install` to install both the program and manual, then use `man murx`.
 The default prefix is `/usr/local`; override `PREFIX`, `BINDIR` or `MANDIR`
 as needed. `DESTDIR` supports staged installs, and `make uninstall` removes
 the installed program and manual.
@@ -42,7 +42,7 @@ Use `-p x` or `--prefix x` to choose Ctrl-X instead; `--prefix` is the long
 form of `-p`. Letters `a` through `z` select Ctrl-A through Ctrl-Z,
 case-insensitively. The choice applies to this attached client; use the option
 again when reattaching, or set a shell
-alias such as `alias moerx='moerx -p x'`. Clients attached to the same session
+alias such as `alias murx='murx -p x'`. Clients attached to the same session
 can choose different prefixes.
 
 With `-p x`, detach with `Ctrl-X d`, send a literal Ctrl-X with `Ctrl-X a`,
@@ -58,16 +58,26 @@ existing session for all attached clients; omitting the option preserves its
 position. Prompts and messages follow the status line. Restart servers from
 older versions once before using this option.
 
-Use `--no-cwd` to show `[moerx]` on the left of the status bar instead of the
+Use `--no-cwd` to show `[murx]` on the left of the status bar instead of the
 current directory, and `--no-clock` to hide the clock on the right. Use
-`--no-moerx` to hide `[moerx]` when using `--no-clock` (and `--no-cwd`). Use
+`--no-murx` to hide `[murx]` when using `--no-clock` (and `--no-cwd`). Use
 `--no-hostname` to hide the `hostname:` prefix in window names and the outer
 terminal title. These options apply when starting a new session.
+
+## Upgrading from moerx
+
+The executable, source and manual are now `murx`, `murx.c` and `murx.1`.
+Update aliases and scripts to use `murx` and replace `--no-moerx` with
+`--no-murx`. Sessions use a separate `murx-<uid>` socket directory; finish
+existing sessions with the old executable before removing it. Existing
+sessions are not migrated automatically. Replace the optional remote SSH
+hooks below and reload the remote shell: custom reports now use `murx-cwd`
+and `murx-root`.
 
 ## What it does
 
 - One persistent server per session (a Unix socket in
-  `$XDG_RUNTIME_DIR/moerx-<uid>/` or `$TMPDIR/moerx-<uid>/`).
+  `$XDG_RUNTIME_DIR/murx-<uid>/` or `$TMPDIR/murx-<uid>/`).
 - Windows, panes, splits, resizing, renaming and a status line.
 - Real ptys per pane, a built-in VT100/xterm-ish screen emulator (colors,
   256-color and truecolor SGR, alternate screen, scrolling, UTF-8, wide
@@ -94,21 +104,21 @@ terminal title. These options apply when starting a new session.
 
 ## SSH window names and directories (optional)
 
-This section is **optional** and only needed if you want `moerx` to show
+This section is **optional** and only needed if you want `murx` to show
 details from inside an SSH session (remote hostname/program in window titles
 and the window list, remote working directory in the status line, and reported
-remote root status). If you do not use SSH from `moerx`, or you are fine with
+remote root status). If you do not use SSH from `murx`, or you are fine with
 the pane being shown as the local `ssh` process (e.g. `local-hostname:ssh`),
 you can skip this entire section—no remote configuration is required for
 normal local use.
 
-While an SSH pane is active, `moerx` can show `[moerx] remote-hostname:program`
-(for example `[moerx] server:vim`) in the outer terminal title and
+While an SSH pane is active, `murx` can show `[murx] remote-hostname:program`
+(for example `[murx] server:vim`) in the outer terminal title and
 `server:vim` in the window list, update it as remote programs start/stop, and
 show the remote shell name (for example `server:zsh`) at a remote prompt.
 Because SSH does not expose the remote foreground program, directory, or root
 status to the local terminal, the **remote shell** must emit OSC title/reports
-for `moerx` to display this. Without those reports, names remain
+for `murx` to display this. Without those reports, names remain
 `local-hostname:ssh` and remote directory/root details are not tracked.
 Names refresh within one second; disconnecting restores the local hostname,
 shell name, and path.
@@ -131,7 +141,7 @@ host you connect to over SSH:
 ```zsh
 if [[ -o interactive && ( -n $SSH_CONNECTION || $TERM == screen-256color ) ]]; then
     autoload -Uz add-zsh-hook
-    moerx_ssh_title() {
+    murx_ssh_title() {
         local program=${1:t}
         printf '\033]2;%s:%s\007' "${HOST%%.*}" "$program"
         local directory=$PWD
@@ -140,28 +150,28 @@ if [[ -o interactive && ( -n $SSH_CONNECTION || $TERM == screen-256color ) ]]; t
         elif [[ $directory == "$HOME/"* ]]; then
             directory="~/${directory#"$HOME/"}"
         fi
-        printf '\033]777;moerx-cwd;%s\007' "$directory"
-        printf '\033]777;moerx-root;%s\007' "$((EUID == 0))"
+        printf '\033]777;murx-cwd;%s\007' "$directory"
+        printf '\033]777;murx-root;%s\007' "$((EUID == 0))"
     }
-    moerx_ssh_preexec() {
+    murx_ssh_preexec() {
         local -a words
         words=(${(z)1})
-        moerx_ssh_title "${(Q)words[1]}"
+        murx_ssh_title "${(Q)words[1]}"
     }
-    moerx_ssh_precmd() { moerx_ssh_title zsh; }
-    add-zsh-hook preexec moerx_ssh_preexec
-    add-zsh-hook precmd moerx_ssh_precmd
+    murx_ssh_precmd() { murx_ssh_title zsh; }
+    add-zsh-hook preexec murx_ssh_preexec
+    add-zsh-hook precmd murx_ssh_precmd
 fi
 ```
 
 This reports the command launched by the shell (the first command for a
-pipeline), then `hostname:zsh` at the prompt. moerx retains the latest
+pipeline), then `hostname:zsh` at the prompt. murx retains the latest
 `hostname:program` for that SSH job when programs send other terminal titles,
 so these cannot reset the window name to `local-hostname:ssh`.
 The hook also reports the remote working directory before each command and at
 each prompt, so the status bar follows remote `cd` commands and shows `~` for
 the remote home directory. Disconnecting restores the local path. Restart
-existing moerx servers and reload the remote shell configuration after upgrading.
+existing murx servers and reload the remote shell configuration after upgrading.
 
 ### Bash
 
@@ -170,8 +180,8 @@ host you connect to over SSH:
 
 ```bash
 if [[ $- == *i* && ( -n $SSH_CONNECTION || $TERM == screen-256color ) &&
-      -z ${moerx_ssh_installed-} ]]; then
-    moerx_ssh_title() {
+      -z ${murx_ssh_installed-} ]]; then
+    murx_ssh_title() {
         local program=$1 directory=$PWD
         program=${program##*/}
         printf '\033]2;%s:%s\007' "${HOSTNAME%%.*}" "$program"
@@ -180,35 +190,35 @@ if [[ $- == *i* && ( -n $SSH_CONNECTION || $TERM == screen-256color ) &&
         elif [[ $directory == "$HOME/"* ]]; then
             directory="~/${directory#"$HOME/"}"
         fi
-        printf '\033]777;moerx-cwd;%s\007' "$directory"
-        printf '\033]777;moerx-root;%s\007' "$((EUID == 0))"
+        printf '\033]777;murx-cwd;%s\007' "$directory"
+        printf '\033]777;murx-root;%s\007' "$((EUID == 0))"
     }
-    moerx_ssh_preexec() {
-        if [[ ${moerx_ssh_ready-0} == 1 && $1 != moerx_ssh_precmd ]]; then
-            moerx_ssh_ready=0
+    murx_ssh_preexec() {
+        if [[ ${murx_ssh_ready-0} == 1 && $1 != murx_ssh_precmd ]]; then
+            murx_ssh_ready=0
             local program rest
             read -r program rest <<< "$1"
             # Strip quotes around a simple command name without evaluating it.
             program=${program#\"}; program=${program%\"}
             program=${program#\'}; program=${program%\'}
-            moerx_ssh_title "$program"
+            murx_ssh_title "$program"
         fi
         return 0
     }
-    moerx_ssh_precmd() {
+    murx_ssh_precmd() {
         local last_status=$?
-        moerx_ssh_title bash
-        moerx_ssh_ready=1
+        murx_ssh_title bash
+        murx_ssh_ready=1
         return "$last_status"
     }
     # Keep existing prompt commands, and run our prompt hook last.
     if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == 'declare -a '* ]]; then
-        PROMPT_COMMAND+=(moerx_ssh_precmd)
+        PROMPT_COMMAND+=(murx_ssh_precmd)
     else
-        PROMPT_COMMAND=("${PROMPT_COMMAND-}" moerx_ssh_precmd)
+        PROMPT_COMMAND=("${PROMPT_COMMAND-}" murx_ssh_precmd)
     fi
-    trap 'moerx_ssh_preexec "$BASH_COMMAND"' DEBUG
-    moerx_ssh_installed=1
+    trap 'murx_ssh_preexec "$BASH_COMMAND"' DEBUG
+    murx_ssh_installed=1
 fi
 ```
 
@@ -227,13 +237,13 @@ paths containing spaces may display differently from the Zsh hook. The command
 text is never evaluated by the hook. Do not enable function tracing (`set -T`)
 for these hooks.
 
-moerx accepts standard OSC 7 reports (`ESC ] 7 ; file://host/path BEL`) too,
+murx accepts standard OSC 7 reports (`ESC ] 7 ; file://host/path BEL`) too,
 including percent-encoded paths. These display the reported absolute path;
-`OSC 777;moerx-cwd;path` accepts either an absolute path or a path starting with
+`OSC 777;murx-cwd;path` accepts either an absolute path or a path starting with
 `~` and preserves that abbreviation. Reports belong to the foreground job
 that sent them, so an old SSH connection cannot override the local shell's path.
-The hooks also send `OSC 777;moerx-root;1` for effective UID 0 and
-`OSC 777;moerx-root;0` otherwise, allowing the active remote window name to turn
+The hooks also send `OSC 777;murx-root;1` for effective UID 0 and
+`OSC 777;murx-root;0` otherwise, allowing the active remote window name to turn
 red in a root shell. This is a visual hint based on shell reports, not a
 security indicator.
 
@@ -301,7 +311,7 @@ Hard-coded:
   `colour12`), refreshed every second and when switching panes. On Linux this
   follows the active pane's foreground process, falling back to its shell's
   directory; on other systems it shows the session's starting directory.
-  Paths in `$HOME` use `~`, for example `[~/code/moerx]`; `$HOME` itself
+  Paths in `$HOME` use `~`, for example `[~/code/murx]`; `$HOME` itself
   appears as `[~]`. Long paths end in `...` to leave room for the window list and clock; the
   directory label is hidden when fewer than four columns remain. Remote SSH
   directories require a shell report; see [SSH window names and directories](#ssh-window-names-and-directories).
@@ -323,8 +333,8 @@ Colours are written to the outer terminal in 256-colour form (`38;5;n` /
 unless the outer terminal advertises `COLORTERM=truecolor` and is not
 screen/tmux/linux.
 
-The terminal window title is set to `[moerx] hostname:program`, following the
-active moerx window (or `[moerx] program` with `--no-hostname`). Hostnames use
+The terminal window title is set to `[murx] hostname:program`, following the
+active murx window (or `[murx] program` with `--no-hostname`). Hostnames use
 their short form (before the first dot).
 
 ## Deliberate limitations
@@ -340,7 +350,7 @@ This is "very basic" by design:
 - Killing the server affects only the current session, since each named
   session has its own small server process.
 - Key repeat is not implemented: one resize step per key press.
-- New windows start in the directory moerx was started from, not in the
+- New windows start in the directory murx was started from, not in the
   current pane's directory.
 - Resizing does not reflow existing text.
 - Session dimensions are clamped to 1,000 columns and 1,000 rows. Numeric
@@ -369,7 +379,7 @@ On Alpine, install `alpine-sdk`, configure your abuild signing key with
 abuild -r
 ```
 
-Install the resulting `moerx` package and its `moerx-doc` subpackage for the
+Install the resulting `murx` package and its `murx-doc` subpackage for the
 manual. abuild writes packages beneath its configured repository destination
 (normally `~/packages`); use `apk add /path/to/package.apk` for each signed
 package after trusting your local signing key.
@@ -383,10 +393,10 @@ makepkg -si
 This builds the package and installs it through pacman. The recipe lists
 `x86_64` and `aarch64`; builds run on the current architecture.
 
-After changing any packaged source file (`moerx.c`, `Makefile`, `moerx.1`,
+After changing any packaged source file (`murx.c`, `Makefile`, `murx.1`,
 `README.md` or `LICENSE`), refresh recipe checksums with `abuild checksum`
 on Alpine and `updpkgsums` (from `pacman-contrib`) on Arch. Neither recipe
-requires a test suite; its check step runs `moerx --help` as a smoke check.
+requires a test suite; its check step runs `murx --help` as a smoke check.
 
 ## Authors
 
@@ -397,5 +407,5 @@ requires a test suite; its check step runs `moerx --help` as a smoke check.
 
 Copyright 2026 Armin Jenewein
 
-The code of moerx is licensed under the terms aof the Apache-2.0 license. See 
+The code of murx is licensed under the terms of the Apache-2.0 license. See
 LICENSE for details.

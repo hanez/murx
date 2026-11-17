@@ -1,24 +1,24 @@
-.TH MOERX 1 "November 2026" "moerx" "User Commands"
+.TH MURX 1 "November 2026" "murx" "User Commands"
 .SH NAME
-moerx \- small persistent terminal multiplexer
+murx \- small persistent terminal multiplexer
 .SH SYNOPSIS
-.B moerx
+.B murx
 .RB [ \-p " letter"]
 .RB [ \-s " top|bottom"]
 .RB [ \-\-no\-cwd ]
 .RB [ \-\-no\-clock ]
-.RB [ \-\-no\-moerx ]
+.RB [ \-\-no\-murx ]
 .RB [ \-\-no\-hostname ]
 .RB [ \-\- ]
 .RI [ session ]
 .br
-.B moerx
+.B murx
 .BR \-h " | " \-\-help
 .br
-.B moerx
+.B murx
 .BR \-l " | " \-\-list\-sessions
 .SH DESCRIPTION
-.B moerx
+.B murx
 runs shells and terminal programs in windows and split panes.
 It attaches to the named session, starting a server if necessary.
 The default session name is
@@ -58,13 +58,13 @@ for all clients. Omitting this option preserves the session's position.
 Prompts and messages follow the status line.
 .TP
 .B \-\-no\-cwd
-Show [moerx] instead of the current directory at the left of the status line.
+Show [murx] instead of the current directory at the left of the status line.
 .TP
 .B \-\-no\-clock
 Hide the status clock.
 .TP
-.B \-\-no\-moerx
-Hide the [moerx] label when the directory is disabled with
+.B \-\-no\-murx
+Hide the [murx] label when the directory is disabled with
 .BR \-\-no\-cwd .
 This does not hide an enabled directory or require the clock to be disabled.
 .TP
@@ -221,7 +221,7 @@ Returning to the shell restores its name.
 Linux uses /proc; other systems use ps.
 The right side shows HH:MM:SS, refreshed every second.
 .PP
-The outer terminal title follows [moerx] hostname:program.
+The outer terminal title follows [murx] hostname:program.
 Hostnames are shortened at the first dot.
 Panes have no title rows; only splits have separator lines.
 The status uses colour12, accents colour14 and the current window colour11.
@@ -251,7 +251,7 @@ Resizing does not reflow existing text.
 SSH does not expose remote foreground programs or working directories locally.
 Configure the remote shell to send terminal reports using one of the examples
 below. Reload the shell configuration or open a new SSH shell afterward.
-Restart session servers after upgrading moerx to gain newly added features.
+Restart session servers after upgrading murx to gain newly added features.
 .PP
 OSC 0 or OSC 2 titles of the form hostname:program update the SSH window name.
 Use a hostname containing only letters, digits, dots, underscores or hyphens,
@@ -264,19 +264,19 @@ Directories may be reported using OSC 7:
 .nf
 ESC ] 7 ; file://host/percent-encoded-path BEL
 .fi
-or using the moerx-specific form:
+or using the murx-specific form:
 .nf
-ESC ] 777 ; moerx-cwd ; /absolute/path BEL
-ESC ] 777 ; moerx-cwd ; ~/relative/to/remote/home BEL
+ESC ] 777 ; murx-cwd ; /absolute/path BEL
+ESC ] 777 ; murx-cwd ; ~/relative/to/remote/home BEL
 .fi
 The spaces above separate fields for readability and are not transmitted.
 ESC backslash also terminates an OSC report.
 Standard OSC 7 paths are percent-decoded and displayed as absolute paths;
-the moerx-specific form preserves remote ~ abbreviations.
+the murx-specific form preserves remote ~ abbreviations.
 Reports are associated with the foreground job that sent them.
 Disconnecting SSH restores the local shell's path and name.
 With splits the window and status follow the active pane.
-OSC 777;moerx-root;1 reports a root shell and OSC 777;moerx-root;0 clears it.
+OSC 777;murx-root;1 reports a root shell and OSC 777;murx-root;0 clears it.
 The report is tied to the foreground SSH job and is ignored after disconnect.
 Remote su command titles also mark the active window red, even before a UID
 report arrives. Remote shells without hooks cannot report their UID.
@@ -293,7 +293,7 @@ precmd restores the shell name and reports the directory after cd.
 .ft CR
 if [[ \-o interactive && ( \-n $SSH_CONNECTION || $TERM == screen\-256color ) ]]; then
     autoload \-Uz add\-zsh\-hook
-    moerx_ssh_title() {
+    murx_ssh_title() {
         local program=${1:t}
         printf '\e033]2;%s:%s\e007' "${HOST%%.*}" "$program"
         local directory=$PWD
@@ -302,17 +302,17 @@ if [[ \-o interactive && ( \-n $SSH_CONNECTION || $TERM == screen\-256color ) ]]
         elif [[ $directory == "$HOME/"* ]]; then
             directory="~/${directory#"$HOME/"}"
         fi
-        printf '\e033]777;moerx\-cwd;%s\e007' "$directory"
-        printf '\e033]777;moerx\-root;%s\e007' "$((EUID == 0))"
+        printf '\e033]777;murx\-cwd;%s\e007' "$directory"
+        printf '\e033]777;murx\-root;%s\e007' "$((EUID == 0))"
     }
-    moerx_ssh_preexec() {
+    murx_ssh_preexec() {
         local \-a words
         words=(${(z)1})
-        moerx_ssh_title "${(Q)words[1]}"
+        murx_ssh_title "${(Q)words[1]}"
     }
-    moerx_ssh_precmd() { moerx_ssh_title zsh; }
-    add\-zsh\-hook preexec moerx_ssh_preexec
-    add\-zsh\-hook precmd moerx_ssh_precmd
+    murx_ssh_precmd() { murx_ssh_title zsh; }
+    add\-zsh\-hook preexec murx_ssh_preexec
+    add\-zsh\-hook precmd murx_ssh_precmd
 fi
 
 .ft
@@ -327,8 +327,8 @@ Do not enable function tracing (set -T) for these hooks.
 .nf
 .ft CR
 if [[ $\- == *i* && ( \-n $SSH_CONNECTION || $TERM == screen\-256color ) &&
-      \-z ${moerx_ssh_installed\-} ]]; then
-    moerx_ssh_title() {
+      \-z ${murx_ssh_installed\-} ]]; then
+    murx_ssh_title() {
         local program=$1 directory=$PWD
         program=${program##*/}
         printf '\e033]2;%s:%s\e007' "${HOSTNAME%%.*}" "$program"
@@ -337,35 +337,35 @@ if [[ $\- == *i* && ( \-n $SSH_CONNECTION || $TERM == screen\-256color ) &&
         elif [[ $directory == "$HOME/"* ]]; then
             directory="~/${directory#"$HOME/"}"
         fi
-        printf '\e033]777;moerx\-cwd;%s\e007' "$directory"
-        printf '\e033]777;moerx\-root;%s\e007' "$((EUID == 0))"
+        printf '\e033]777;murx\-cwd;%s\e007' "$directory"
+        printf '\e033]777;murx\-root;%s\e007' "$((EUID == 0))"
     }
-    moerx_ssh_preexec() {
-        if [[ ${moerx_ssh_ready\-0} == 1 && $1 != moerx_ssh_precmd ]]; then
-            moerx_ssh_ready=0
+    murx_ssh_preexec() {
+        if [[ ${murx_ssh_ready\-0} == 1 && $1 != murx_ssh_precmd ]]; then
+            murx_ssh_ready=0
             local program rest
             read \-r program rest <<< "$1"
             # Strip quotes around a simple command name without evaluating it.
             program=${program#\e"}; program=${program%\e"}
             program=${program#\e'}; program=${program%\e'}
-            moerx_ssh_title "$program"
+            murx_ssh_title "$program"
         fi
         return 0
     }
-    moerx_ssh_precmd() {
+    murx_ssh_precmd() {
         local last_status=$?
-        moerx_ssh_title bash
-        moerx_ssh_ready=1
+        murx_ssh_title bash
+        murx_ssh_ready=1
         return "$last_status"
     }
     # Keep existing prompt commands, and run our prompt hook last.
     if [[ $(declare \-p PROMPT_COMMAND 2>/dev/null) == 'declare \-a '* ]]; then
-        PROMPT_COMMAND+=(moerx_ssh_precmd)
+        PROMPT_COMMAND+=(murx_ssh_precmd)
     else
-        PROMPT_COMMAND=("${PROMPT_COMMAND\-}" moerx_ssh_precmd)
+        PROMPT_COMMAND=("${PROMPT_COMMAND\-}" murx_ssh_precmd)
     fi
-    trap 'moerx_ssh_preexec "$BASH_COMMAND"' DEBUG
-    moerx_ssh_installed=1
+    trap 'murx_ssh_preexec "$BASH_COMMAND"' DEBUG
+    murx_ssh_installed=1
 fi
 
 .ft
@@ -404,9 +404,9 @@ Used by the example shell hooks to enable reporting in remote SSH shells.
 Along with the standard locale environment, controls character width handling.
 .SH FILES
 .TP
-.I $XDG_RUNTIME_DIR/moerx-<uid>/<session>.sock
+.I $XDG_RUNTIME_DIR/murx-<uid>/<session>.sock
 Per-user session socket. If XDG_RUNTIME_DIR is unavailable, the parent comes
-from TMPDIR or /tmp. Long socket paths fall back to /tmp/moerx-<uid>/.
+from TMPDIR or /tmp. Long socket paths fall back to /tmp/murx-<uid>/.
 Socket permissions are restricted to the owner.
 .PP
 There is no configuration file and no on-disk scrollback.
@@ -414,24 +414,31 @@ There is no configuration file and no on-disk scrollback.
 Start or reattach to the default session:
 .PP
 .nf
-moerx
+murx
 .fi
 .PP
 Use a named session, Ctrl-X prefix and bottom status:
 .PP
 .nf
-moerx \-\-prefix x \-\-status bottom work
+murx \-\-prefix x \-\-status bottom work
 .fi
 .PP
 Start a session with a minimal status display:
 .PP
 .nf
-moerx \-\-no\-cwd \-\-no\-moerx \-\-no\-clock \-\-no\-hostname minimal
+murx \-\-no\-cwd \-\-no\-murx \-\-no\-clock \-\-no\-hostname minimal
 .fi
 .PP
 Detach with Ctrl-A d (or Ctrl-X d with the alternate prefix), then run the
 same session command to reattach. Exit the last pane's shell to end the session,
 or use the confirmed kill-pane, kill-window or kill-server bindings.
+.SH UPGRADING FROM MOERX
+The executable and manual are now murx and murx(1). Update scripts and aliases,
+and replace the old status-label option with \fB\-\-no\-murx\fR.
+Sessions use a separate murx-<uid> socket directory and are not migrated.
+Finish existing sessions with the old executable before removing it.
+Replace optional remote shell hooks and reload the remote shell;
+custom OSC reports now use murx-cwd and murx-root.
 .SH EXIT STATUS
 .TP
 .B 0

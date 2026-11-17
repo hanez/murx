@@ -1,13 +1,13 @@
 # Local source snapshot; refresh checksums with `abuild checksum` after edits.
-pkgname=moerx
+pkgname=murx
 pkgver=0.20261116
 pkgrel=0
 pkgdesc="Small persistent terminal multiplexer"
-url="https://codeberg.org/armin/moerx"
+url="https://codeberg.org/armin/murx"
 arch="all"
 license="Apache-2.0"
 subpackages="$pkgname-doc"
-source="moerx.c Makefile moerx.1 README.md LICENSE"
+source="murx.c Makefile murx.1 README.md LICENSE"
 builddir="$srcdir"
 
 build() {
@@ -15,7 +15,7 @@ build() {
 }
 
 check() {
-    ./moerx --help >/dev/null
+    ./murx --help >/dev/null
 }
 
 package() {
@@ -25,9 +25,9 @@ package() {
 }
 
 sha512sums="
-0a0cedb8702b5ac041896065c6d36d22f57deffdc3f8023c9b02b7b87218dfcd32a8e2eaecfc470930d1d1228109cf6894ba8e5242ebcf760ef2dd17ab35d2ab  moerx.c
-e6336e712a9a6071b16cbde83cd6f591c480da68cf5185f0db27f321b26adb075844a958e792da419dcb82a930de6cff28bc64a98e9b0facd9350e382aa95ce1  Makefile
-cc677bc8c9637963dd19a031c0920f7178e71a93d236d1445ef4a5cbabefd3b3a68d9696444d2a6d0a9993ed05df55e8de876e7e515bd31effaeb7425c90a52a  moerx.1
-d1bc928e391b50a0031834396b8f655474d8073399f94e7c5dbf7469977a1ff7665db1c21ced7180bf7a891584dae61f52e1ef345ef75ab3348705aeb0d091e0  README.md
+efd4dd0bcfd3ef36b1e4b8285452690f684a29e7906c0ada7aa09f879143b998a6e9cb8ddc76eb861867f882c7cb7f5a1fb350ce102e67a632d8ea238eba9b65  murx.c
+4f52ecfc78bb993f9bdbaa235f671fe54327497fa8e21517805a2696bea9f06d335e4da564d0019ec1fad86986c05bce90e4825dcebc2ef3c0bc66fb9a768030  Makefile
+523ac85c9b789a7721c76e8f7691a1a8ab43d7fec2624f43b3850e5135451d94404d8711fa40422a67e9f13b7388470436ab06deb6ad7c87c7e72a37492ae617  murx.1
+b6595d86edb76ec4ef90a1b44dfc350543f501b1c5bd41dbd2fe5b479c57d871f83eff9021b0407bb8b791e410128c70c9c0772a9328cded90e67f70cc20b9d4  README.md
 2fe33ba22c5f68e124904be594208f050be20f33d115f9a56f60cac93304102da32e6a7e78154e831d3704da7ca8bfefd7025e7b8901e65babcd83e7342f6382  LICENSE
 "
