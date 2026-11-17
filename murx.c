@@ -63,6 +63,20 @@
 #include <unistd.h>
 #include <wchar.h>
 
+/* GCC 16 miscompiles grid_resize() at -O2 when it specializes the function
+   interprocedurally: grid_init() gets a hard-coded 1x1 size, so pane grids
+   collapse to one cell and shell prompts render one character at a time.
+   Keep that function out of interprocedural optimization. Clang ignores it. */
+#if defined(__GNUC__) && !defined(__clang__) && defined(__has_attribute)
+#if __has_attribute(noipa)
+#define MURX_NOIPA __attribute__((noipa))
+#else
+#define MURX_NOIPA
+#endif
+#else
+#define MURX_NOIPA
+#endif
+
 #define DEFAULT_PREFIX 0x01
 
 /* client -> server */
@@ -317,7 +331,7 @@ static void grid_clear_line(Grid *g, int y, int32_t bg) {
     }
 }
 
-static void grid_resize(Grid *g, int w, int h) {
+static void MURX_NOIPA grid_resize(Grid *g, int w, int h) {
     if (w < 1) w = 1;
     if (h < 1) h = 1;
     if (w == g->w && h == g->h) return;

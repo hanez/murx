@@ -4,7 +4,7 @@ A deliberately small terminal multiplexer. One C file, no config file, no
 dependencies.
 
 ```sh
-make -B CC=clang
+make
 ./murx                          # session "0"
 ./murx work                     # separate named session
 ./murx 1                        # separate numbered session
@@ -362,8 +362,9 @@ This is "very basic" by design:
 
 ## Build notes
 
-Requires Clang and POSIX. Build with `make CC=clang`. GCC builds have known
-runtime issues; use Clang even if GCC compiles the source successfully.
+Requires a C99 compiler and POSIX. Build with `make`. Tested with Clang and
+GCC 16; `grid_resize()` carries a guarded workaround for a GCC 16 optimizer bug
+that otherwise collapses pane grids to 1x1.
 
 ## Linux packages
 
@@ -371,9 +372,8 @@ The root directory includes [APKBUILD](APKBUILD) for Alpine Linux and
 [PKGBUILD](PKGBUILD) for Arch Linux. Both build the local source files rather
 than downloading a release. Version `0.20261116` identifies an unreleased
 snapshot; update the version and release fields when packaging a newer snapshot.
-Both recipes declare Clang as a build dependency and explicitly compile with
-`CC=clang`. The packages install under `/usr`, including the manual, README
-and license.
+Both recipes build with the default C compiler, so plain `make` works there too.
+The packages install under `/usr`, including the manual, README and license.
 
 On Alpine, install `alpine-sdk`, configure your abuild signing key with
 `abuild-keygen -a -i`, and run as a regular user with abuild configured:
