@@ -4259,7 +4259,7 @@ static void print_help(FILE *out) {
         "Without -s, keep the session position.\n"
         "Use --no-cwd to hide the current directory in the status bar.\n"
         "Use --no-clock to hide the clock in the status bar.\n"
-        "Use --no-murx to hide [murx] in the status bar when using --no-clock.\n"
+        "Use --no-murx to hide [murx] in the status bar when using --no-cwd.\n"
         "Use --no-hostname to hide the hostname: prefix in window titles.\n"
         "\n"
         "Use -p x (or --prefix x) to choose Ctrl-X as this client's prefix.\n"

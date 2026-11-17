@@ -1,6 +1,7 @@
 # Build files
 murx
 *.o
+src/
 
 # Packages
 *.apk
