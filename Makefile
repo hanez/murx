@@ -26,4 +26,16 @@ pkgclean:
 	rm -rf *.apk
 	rm -rf *.xz
 
-.PHONY: all install uninstall clean
+pkgalpine: pkgclean
+	abuild checksum
+	abuild -r
+
+pkgarch: pkgclean
+	updpkgsums
+	makepkg
+
+pkgsums:
+	abuild checksum
+	updpkgsums
+
+.PHONY: all install uninstall clean pkgclean pkgalpine pkgarch pkgsums
