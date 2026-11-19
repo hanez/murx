@@ -4259,7 +4259,7 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
 
 static void print_help(FILE *out) {
     fprintf(out,
-        "usage: murx [-p letter] [-s top|bottom] [--no-cwd] [--no-clock] [--no-murx] [--no-hostname] [session]\n"
+        "usage: murx [-p letter] [-s top|bottom] [--cwd] [--clock] [--murx] [--hostname] [session]\n"
         "       murx -l | --list-sessions\n"
         "       murx -h | --help\n"
         "\n"
@@ -4271,10 +4271,11 @@ static void print_help(FILE *out) {
         "Use -s top|bottom (or --status top|bottom) to position the status line.\n"
         "New sessions default to top; an explicit choice updates all attached clients.\n"
         "Without -s, keep the session position.\n"
-        "Use --no-cwd to hide the current directory in the status bar.\n"
-        "Use --no-clock to hide the clock in the status bar.\n"
-        "Use --no-murx to hide [murx] in the status bar when using --no-cwd.\n"
-        "Use --no-hostname to hide the hostname: prefix in window titles.\n"
+        "Use --cwd to show the current directory in the status bar.\n"
+        "Use --clock to show the clock in the status bar.\n"
+        "Use --murx to show [murx] in the status bar when --cwd is not enabled.\n"
+        "Use --hostname to show the hostname: prefix in window titles.\n"
+        "These four features default to off and apply only to new sessions.\n"
         "\n"
         "Use -p x (or --prefix x) to choose Ctrl-X as this client's prefix.\n"
         "Letters a through z are supported (case-insensitive); the default is a (Ctrl-A).\n"
@@ -4349,7 +4350,7 @@ int main(int argc, char **argv) {
     int argi = 1;
     unsigned char prefix = DEFAULT_PREFIX;
     int status = 0;
-    DisplayOptions display = {1, 1, 1, 1};
+    DisplayOptions display = {0, 0, 0, 0};
     int list = 0;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1]) {
         const char *option = argv[argi++];
@@ -4360,14 +4361,14 @@ int main(int argc, char **argv) {
         }
         if (strcmp(option, "-l") == 0 || strcmp(option, "--list-sessions") == 0) {
             list = 1;
-        } else if (strcmp(option, "--no-cwd") == 0) {
-            display.show_cwd = 0;
-        } else if (strcmp(option, "--no-clock") == 0) {
-            display.show_clock = 0;
-        } else if (strcmp(option, "--no-murx") == 0) {
-            display.show_murx = 0;
-        } else if (strcmp(option, "--no-hostname") == 0) {
-            display.show_hostname = 0;
+        } else if (strcmp(option, "--cwd") == 0) {
+            display.show_cwd = 1;
+        } else if (strcmp(option, "--clock") == 0) {
+            display.show_clock = 1;
+        } else if (strcmp(option, "--murx") == 0) {
+            display.show_murx = 1;
+        } else if (strcmp(option, "--hostname") == 0) {
+            display.show_hostname = 1;
         } else if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
             if (argi >= argc || !parse_prefix(argv[argi], &prefix)) {
                 fprintf(stderr, "murx: %s requires a letter from a through z\n", option);

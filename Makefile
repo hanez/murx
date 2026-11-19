@@ -22,4 +22,8 @@ uninstall:
 clean:
 	rm -f murx
 
+pkgclean:
+	rm -rf *.apk
+	rm -rf *.xz
+
 .PHONY: all install uninstall clean

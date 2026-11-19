@@ -5,10 +5,10 @@ murx \- small persistent terminal multiplexer
 .B murx
 .RB [ \-p " letter"]
 .RB [ \-s " top|bottom"]
-.RB [ \-\-no\-cwd ]
-.RB [ \-\-no\-clock ]
-.RB [ \-\-no\-murx ]
-.RB [ \-\-no\-hostname ]
+.RB [ \-\-cwd ]
+.RB [ \-\-clock ]
+.RB [ \-\-murx ]
+.RB [ \-\-hostname ]
 .RB [ \-\- ]
 .RI [ session ]
 .br
@@ -57,26 +57,27 @@ New sessions default to top. An explicit choice changes an existing session
 for all clients. Omitting this option preserves the session's position.
 Prompts and messages follow the status line.
 .TP
-.B \-\-no\-cwd
-Show [murx] instead of the current directory at the left of the status line.
+.B \-\-cwd
+Show the current directory at the left of the status line.
 .TP
-.B \-\-no\-clock
-Hide the status clock.
+.B \-\-clock
+Show the status clock.
 .TP
-.B \-\-no\-murx
-Hide the [murx] label when the directory is disabled with
-.BR \-\-no\-cwd .
-This does not hide an enabled directory or require the clock to be disabled.
+.B \-\-murx
+Show the [murx] label at the left of the status line when
+.B \-\-cwd
+is not enabled. The directory takes precedence if both options are supplied.
 .TP
-.B \-\-no\-hostname
-Hide the hostname: prefix in window names and the outer terminal title.
+.B \-\-hostname
+Show the hostname: prefix in window names and the outer terminal title.
 .TP
 .BR \-h ", " \-\-help
 Print usage and keyboard shortcuts, then exit.
 .PP
-The four
-.B \-\-no\-*
-options apply only when creating a session; they do not change a running server.
+These four display features are disabled by default. Their options apply only
+when creating a session; they do not change a running server.
+To restore the previous default display, use
+.BR "murx \-\-cwd \-\-clock \-\-hostname session" .
 .SH KEY BINDINGS
 Every binding below starts with the prefix: press Ctrl-A, release it,
 then press the remaining key. Substitute your chosen prefix throughout,
@@ -205,7 +206,9 @@ opening scrollback there shows only their current screen.
 Colors are retained; lines are clipped or padded to the pane width without reflow.
 Text selection and copying are not provided.
 .SH STATUS AND TERMINAL DISPLAY
-The left side shows [/path/to/directory]. On Linux the directory follows the
+With --cwd, the left side shows [/path/to/directory]. With --murx and without
+--cwd, it shows [murx]. By default neither label is shown.
+On Linux the directory follows the
 active pane's foreground process, falling back to its shell and then the
 session's starting directory. Other systems use the starting directory unless
 a shell reports a path. Local HOME paths are abbreviated with ~.
@@ -214,14 +217,17 @@ the label is hidden if fewer than four columns remain.
 .PP
 The window list is right-aligned. Each entry contains its number and name;
 * marks the current window and a trailing hyphen marks the previous window.
-Names follow hostname:program for each window's active foreground job,
+Names show program for each window's active foreground job,
+or hostname:program with --hostname,
 including inactive windows, and refresh within one second.
 Pipelines use the foreground process group leader's name.
 Returning to the shell restores its name.
 Linux uses /proc; other systems use ps.
-The right side shows HH:MM:SS, refreshed every second.
+With --clock, the right side shows HH:MM:SS, refreshed every second.
 .PP
-The outer terminal title follows [murx] hostname:program.
+The outer terminal title follows [murx] program, or [murx] hostname:program
+with --hostname. Its [murx] prefix is always present; --murx controls only
+the status label.
 Hostnames are shortened at the first dot.
 Panes have no title rows; only splits have separator lines.
 The status uses colour12, accents colour14 and the current window colour11.
@@ -248,6 +254,10 @@ Ctrl-A * lists attached clients for size diagnostics.
 Terminal size changes are checked every 250 milliseconds as well as on SIGWINCH.
 Resizing does not reflow existing text.
 .SH REMOTE SHELL INTEGRATION
+Enable --hostname to display reported remote hostnames and --cwd to display
+reported directories when creating the session. The hostname examples below
+assume --hostname is enabled.
+.PP
 SSH does not expose remote foreground programs or working directories locally.
 Configure the remote shell to send terminal reports using one of the examples
 below. Reload the shell configuration or open a new SSH shell afterward.
@@ -426,7 +436,7 @@ murx \-\-prefix x \-\-status bottom work
 Start a session with a minimal status display:
 .PP
 .nf
-murx \-\-no\-cwd \-\-no\-murx \-\-no\-clock \-\-no\-hostname minimal
+murx minimal
 .fi
 .PP
 Detach with Ctrl-A d (or Ctrl-X d with the alternate prefix), then run the
@@ -434,7 +444,8 @@ same session command to reattach. Exit the last pane's shell to end the session,
 or use the confirmed kill-pane, kill-window or kill-server bindings.
 .SH UPGRADING FROM MOERX
 The executable and manual are now murx and murx(1). Update scripts and aliases,
-and replace the old status-label option with \fB\-\-no\-murx\fR.
+and remove the old status-label disabling option. The label is now disabled
+by default; use \fB\-\-murx\fR to enable it.
 Sessions use a separate murx-<uid> socket directory and are not migrated.
 Finish existing sessions with the old executable before removing it.
 Replace optional remote shell hooks and reload the remote shell;

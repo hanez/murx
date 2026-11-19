@@ -12,10 +12,10 @@ make
 ./murx --prefix x work          # same as -p x
 ./murx -s bottom work           # show the session status line at the bottom
 ./murx --status bottom work     # same as -s bottom
-./murx --no-cwd work            # show [murx] instead of the directory
-./murx --no-cwd --no-murx work  # do not show [murx] instead of the directory
-./murx --no-clock work          # hide the status bar clock
-./murx --no-hostname work       # hide the hostname: prefix in window titles
+./murx --cwd work               # show the current directory in the status bar
+./murx --murx work              # show [murx] on the left of the status bar
+./murx --clock work             # show the status bar clock
+./murx --hostname work          # show the hostname: prefix in window titles
 ./murx -l, --list-sessions      # list running sessions without attaching
 ./murx --help                   # all shortcuts
 ```
@@ -59,17 +59,20 @@ existing session for all attached clients; omitting the option preserves its
 position. Prompts and messages follow the status line. Restart servers from
 older versions once before using this option.
 
-Use `--no-cwd` to show `[murx]` on the left of the status bar instead of the
-current directory, and `--no-clock` to hide the clock on the right. Use
-`--no-murx` to hide `[murx]` when using `--no-clock` (and `--no-cwd`). Use
-`--no-hostname` to hide the `hostname:` prefix in window names and the outer
-terminal title. These options apply when starting a new session.
+Use `--cwd` to show the current directory on the left of the status bar,
+and `--clock` to show the clock on the right. Use `--murx` to show `[murx]`
+on the left when `--cwd` is not enabled; the directory takes precedence if
+both are supplied. Use `--hostname` to show the `hostname:` prefix in window
+names and the outer terminal title. All four features are disabled by default.
+These options apply when starting a new session and do not change an existing
+session. To restore the previous default display, use
+`murx --cwd --clock --hostname session`.
 
 ## Upgrading from moerx
 
 The executable, source and manual are now `murx`, `murx.c` and `murx.1`.
-Update aliases and scripts to use `murx` and replace `--no-moerx` with
-`--no-murx`. Sessions use a separate `murx-<uid>` socket directory; finish
+Update aliases and scripts to use `murx`. The status label is now disabled
+by default; use `--murx` to enable it. Sessions use a separate `murx-<uid>` socket directory; finish
 existing sessions with the old executable before removing it. Existing
 sessions are not migrated automatically. Replace the optional remote SSH
 hooks below and reload the remote shell: custom reports now use `murx-cwd`
@@ -96,14 +99,17 @@ and `murx-root`.
   session server to apply the fix. In an existing shell, `umask 022` restores
   typical public file permissions for subsequent commands, including builds
   published with `rsync -a`.
-- Window names show `hostname:program` for the foreground program in their
-  active pane (for example `laptop:zsh` or `laptop:vim`), refreshed
-  every second, including in inactive windows. With `--no-hostname`, they show
-  only `program`. When a program exits, the name returns to the shell. For
+- Window names show `program` for the foreground program in their active pane,
+  refreshed every second, including in inactive windows. With `--hostname`,
+  they show `hostname:program` (for example `laptop:zsh` or `laptop:vim`). When a program exits, the name returns to the shell. For
   pipelines, the foreground process group leader supplies the name. Linux uses
   `/proc`; other systems use `ps`.
 
 ## SSH window names and directories (optional)
+
+Enable `--hostname` to display reported remote hostnames and `--cwd` to
+display reported remote directories when creating the session. The hostname
+examples below assume `--hostname` is enabled.
 
 This section is **optional** and only needed if you want `murx` to show
 details from inside an SSH session (remote hostname/program in window titles
@@ -308,7 +314,7 @@ Hard-coded:
 
 - Status on top by default (`-s bottom` moves it), default background, foreground `colour12`. The palette mirrors
   `~/.tmux.conf`.
-- `[/path/to/directory]` on the left (directory in `colour14`, brackets
+- With `--cwd`, `[/path/to/directory]` on the left (directory in `colour14`, brackets
   `colour12`), refreshed every second and when switching panes. On Linux this
   follows the active pane's foreground process, falling back to its shell's
   directory; on other systems it shows the session's starting directory.
@@ -316,7 +322,8 @@ Hard-coded:
   appears as `[~]`. Long paths end in `...` to leave room for the window list and clock; the
   directory label is hidden when fewer than four columns remain. Remote SSH
   directories require a shell report; see [SSH window names and directories](#ssh-window-names-and-directories).
-- `HH:MM:SS` on the right in `colour12`, refreshed every second.
+- With `--murx` and without `--cwd`, `[murx]` on the left.
+- With `--clock`, `HH:MM:SS` on the right in `colour12`, refreshed every second.
 - Window list right-aligned: current name `colour11`, or red `colour9` when
   its active pane's foreground process is `su` or has effective UID 0. Other
   window names use `colour12`; separators/flags use `colour14`. The color
@@ -334,9 +341,10 @@ Colours are written to the outer terminal in 256-colour form (`38;5;n` /
 unless the outer terminal advertises `COLORTERM=truecolor` and is not
 screen/tmux/linux.
 
-The terminal window title is set to `[murx] hostname:program`, following the
-active murx window (or `[murx] program` with `--no-hostname`). Hostnames use
-their short form (before the first dot).
+The terminal window title is set to `[murx] program`, following the active
+murx window, or `[murx] hostname:program` with `--hostname`. Hostnames use
+their short form (before the first dot). The `[murx]` prefix in the outer
+terminal title is always present; `--murx` controls only the status bar label.
 
 ## Deliberate limitations
 
