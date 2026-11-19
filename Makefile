@@ -5,10 +5,15 @@ PREFIX  ?= /usr/local
 BINDIR   = $(PREFIX)/bin
 MANDIR  ?= $(PREFIX)/share/man
 
+# openpty(3) lives in libutil on the BSDs, but in libc on Linux and macOS
+# (and in musl). Resolve it in the shell so this Makefile works with both
+# GNU make and BSD make.
+PTY_LIB_SH = uname -s | grep -Eq 'BSD|DragonFly' && echo -lutil
+
 all: murx
 
 murx: murx.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ murx.c $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ murx.c $(LDLIBS) `$(PTY_LIB_SH)`
 
 install: murx murx.1
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(MANDIR)/man1"

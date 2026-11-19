@@ -370,7 +370,9 @@ This is "very basic" by design:
 
 ## Build notes
 
-Requires a C99 compiler and POSIX. Build with `make`. Tested with Clang and
+Requires a C99 compiler and POSIX. Build with `make`. Runs on Linux, macOS,
+FreeBSD and OpenBSD (using `openpty(3)` for panes; the Makefile links `-lutil`
+automatically on the BSDs where it is needed). Tested with Clang and
 GCC 16; `grid_resize()` carries a guarded workaround for a GCC 16 optimizer bug
 that otherwise collapses pane grids to 1x1.
 

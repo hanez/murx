@@ -35,7 +35,7 @@
  *   murx [session]     attach to session (default "0"), or start it
  *   murx -h|--help     show usage and all Ctrl-A shortcut chains
  *
- * Pure C99 + POSIX (macOS / Linux / FreeBSD).
+ * Pure C99 + POSIX (macOS / Linux / FreeBSD / OpenBSD).
  */
 
 #include <ctype.h>
@@ -58,6 +58,14 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+/* openpty(3) lives in <pty.h> on Linux and glibc, in <util.h> on the BSDs
+   and macOS. */
+#if defined(__FreeBSD__) || defined(__DragonFly__) || defined(__NetBSD__) || \
+    defined(__OpenBSD__) || defined(__APPLE__)
+#include <util.h>
+#else
+#include <pty.h>
+#endif
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -1460,19 +1468,17 @@ static void pane_free(Pane *p) {
 }
 
 static Pane *pane_new(const char *cwd, int w, int h, const char *title) {
-    int master = open("/dev/ptmx", O_RDWR | O_NOCTTY);
-    if (master < 0) return NULL;
-    if (grantpt(master) < 0 || unlockpt(master) < 0) {
-        close(master);
-        return NULL;
-    }
-    const char *slave = ptsname(master);
-    if (!slave) {
-        close(master);
-        return NULL;
-    }
+    struct winsize iws;
+    memset(&iws, 0, sizeof iws);
+    iws.ws_col = tty_dimension(w > 0 ? w : 80);
+    iws.ws_row = tty_dimension(h > 0 ? h : 24);
+
+    /* openpty() works on Linux, macOS and all BSDs. Linux exposes only
+       /dev/ptmx, while OpenBSD and friends use /dev/pty*; letting libc pick
+       the pty avoids hardcoding either scheme. */
+    int master = -1, slave_fd = -1;
     char slave_path[PATH_MAX];
-    snprintf(slave_path, sizeof slave_path, "%s", slave);
+    if (openpty(&master, &slave_fd, slave_path, NULL, &iws) < 0) return NULL;
 
     const char *shell = getenv("SHELL");
     if (!shell || !*shell) {
@@ -1480,19 +1486,11 @@ static Pane *pane_new(const char *cwd, int w, int h, const char *title) {
         else shell = "/bin/sh";
     }
 
-    /* Open the slave and give it its size before forking. The server keeps
-       this fd for the pane's lifetime: a pty with no slave open would report
-       EOF on the master (and on macOS TIOCSWINSZ only works on the slave). */
-    struct winsize iws;
-    memset(&iws, 0, sizeof iws);
-    iws.ws_col = tty_dimension(w > 0 ? w : 80);
-    iws.ws_row = tty_dimension(h > 0 ? h : 24);
-    int slave_fd = open(slave_path, O_RDWR | O_NOCTTY | O_NONBLOCK);
-    if (slave_fd < 0) {
-        close(master);
-        return NULL;
-    }
-    ioctl(slave_fd, TIOCSWINSZ, &iws);
+    /* openpty() gave the slave its size. The server keeps this fd for the
+       pane's lifetime: a pty with no slave open would report EOF on the
+       master. Make it non-blocking so the server can drain it with poll(). */
+    int flags = fcntl(slave_fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(slave_fd, F_SETFL, flags | O_NONBLOCK);
 
     pid_t pid = fork();
     if (pid < 0) {
@@ -3798,8 +3796,8 @@ static void server_start(const char *path, const char *name, int readyfd, const 
 
     Window *w = window_new(s, NULL);
     if (!w) {
+        server_fail(readyfd, "cannot create pane (openpty)", errno);
         server_cleanup(s);
-        if (readyfd >= 0) close(readyfd);
         _exit(1);
     }
     s->cur = w;
@@ -4006,18 +4004,33 @@ static int spawn_server(const char *path, const char *name, const DisplayOptions
         _exit(1);
     }
     close(p[1]);
-    char ok = 0;
+    char msg[256];
+    size_t used = 0;
     ssize_t got;
-    do {
-        got = read(p[0], &ok, 1);
-    } while (got < 0 && errno == EINTR);
+    for (;;) {
+        got = read(p[0], msg + used, sizeof msg - 1 - used);
+        if (got > 0) {
+            used += (size_t)got;
+            if (used >= sizeof msg - 1) break;
+        } else if (got < 0 && errno == EINTR) {
+            continue;
+        } else {
+            break;
+        }
+    }
     close(p[0]);
+    msg[used] = '\0';
     waitpid(pid, NULL, 0);
     flock(lock, LOCK_UN);
     close(lock);
 
-    if (got != 1 || ok != '1') {
-        errno = EIO;
+    if (used < 1 || msg[0] != '1') {
+        if (used > 0) {
+            fprintf(stderr, "murx: server failed to start: %s\n", msg);
+            errno = 0;  /* already reported */
+        } else {
+            errno = EIO;
+        }
         return -1;
     }
     for (int i = 0; i < 300; i++) {
@@ -4414,8 +4427,10 @@ int main(int argc, char **argv) {
     int fd = connect_session(path);
     if (fd < 0) fd = spawn_server(path, name, &display);
     if (fd < 0) {
-        fprintf(stderr, "murx: cannot start or attach session '%s': %s\n",
-                name, strerror(errno));
+        if (errno != 0) {
+            fprintf(stderr, "murx: cannot start or attach session '%s': %s\n",
+                    name, strerror(errno));
+        }
         return 1;
     }
     return run_client(fd, name, prefix, status);
