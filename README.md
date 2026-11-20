@@ -337,9 +337,10 @@ Hard-coded:
   borders; panes have no title row, leaving more space for terminal content.
 - Messages use `fg=colour6,bg=colour8`.
 
-Use `-c RRGGBB` or `--color RRGGBB` to set this client's status bar
-background. Supply six hexadecimal digits, such as `000000` for black. Repeat
-the option when reattaching. Omitting it uses the terminal's default background.
+Use `-c RRGGBB` or `--color RRGGBB` to set the session's status bar
+background for all attached clients. Supply six hexadecimal digits, such as
+`000000` for black. The session remembers the color across reattachments. New
+sessions use the terminal's default background unless a color is supplied.
 
 Colours are written to the outer terminal in 256-colour form (`38;5;n` /
 `48;5;n`). Truecolor from a pane is mapped to the nearest xterm-256 entry,

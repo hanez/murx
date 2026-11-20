@@ -59,10 +59,10 @@ for all clients. Omitting this option preserves the session's position.
 Prompts and messages follow the status line.
 .TP
 .BR \-c " RRGGBB, " \-\-color " RRGGBB"
-Set this client's status bar background.
+Set the session's status bar background for all attached clients.
 Supply six hexadecimal digits, such as 000000 for black.
-Repeat this option when reattaching. Omitting it uses the terminal's default
-background.
+Omitting this option preserves the session's color when reattaching. New
+sessions use the terminal's default background unless a color is supplied.
 .TP
 .B \-\-cwd
 Show the current directory at the left of the status line.

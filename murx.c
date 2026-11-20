@@ -1213,7 +1213,6 @@ struct Client {
     int attached;
     uint64_t order;        /* attach/resize sequence, newest client wins */
     int truecolor;
-    int32_t status_bg;
     unsigned char in[16384];
     size_t inlen;
     long long escape_since;
@@ -1265,6 +1264,7 @@ struct Session {
 
     int w, h;
     int status_bottom;
+    int32_t status_bg;      /* 0 uses the terminal default */
     DisplayOptions display;
     Window *windows;
     Window *cur, *last;
@@ -2114,10 +2114,10 @@ static void status_draw(Grid *g, Session *s, Client *c) {
         status_right_draw(g, rx, y, clockbuf);
     }
 
-    if (c->status_bg != DEFAULT_COLOR) {
+    if (s->status_bg) {
         for (int x = 0; x < s->w; x++) {
             Cell *cell = grid_at(g, x, y);
-            if (cell->bg == DEFAULT_COLOR) cell->bg = c->status_bg;
+            if (cell->bg == DEFAULT_COLOR) cell->bg = s->status_bg;
         }
     }
 }
@@ -3464,7 +3464,7 @@ static void handle_message(Client *c, Session *s, uint32_t type, const unsigned 
             uint32_t color = 0;
             if (len >= 24) memcpy(&color, data + 20, 4);
             if (color && (color >> 24) != 1) { c->dead = 1; return; }
-            c->status_bg = color ? (int32_t)color : DEFAULT_COLOR;
+            if (color) s->status_bg = (int32_t)color;
             if (status) {
                 s->status_bottom = status == 2;
                 session_layout(s);
@@ -4296,9 +4296,9 @@ static void print_help(FILE *out) {
         "Use -s top|bottom (or --status top|bottom) to position the status line.\n"
         "New sessions default to top; an explicit choice updates all attached clients.\n"
         "Without -s, keep the session position.\n"
-        "Use -c RRGGBB (or --color RRGGBB) to set this client's status bar background.\n"
+        "Use -c RRGGBB (or --color RRGGBB) to set the session's status bar background.\n"
         "Specify six hexadecimal digits, such as 000000 for black.\n"
-        "Without -c, use the terminal's default background.\n"
+        "New sessions use the terminal default. Without -c, keep the session color.\n"
         "Use --cwd to show the current directory in the status bar.\n"
         "Use --clock to show the clock in the status bar.\n"
         "Use --murx to show [murx] in the status bar when --cwd is not enabled.\n"
