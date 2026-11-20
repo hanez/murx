@@ -14,6 +14,7 @@ make
 ./murx --status bottom work     # same as -s bottom
 ./murx --cwd work               # show the current directory in the status bar
 ./murx --murx work              # show [murx] on the left of the status bar
+./murx -c 191a1c work           # use a grey status bar background
 ./murx --clock work             # show the status bar clock
 ./murx --hostname work          # show the hostname: prefix in window titles
 ./murx -l, --list-sessions      # list running sessions without attaching
@@ -312,7 +313,7 @@ Restart an existing session server after upgrading to enable this feature.
 
 Hard-coded:
 
-- Status on top by default (`-s bottom` moves it), default background, foreground `colour12`. The palette mirrors
+- Status on top by default (`-s bottom` moves it), default background (overridable with `-c`), foreground `colour12`. The palette mirrors
   `~/.tmux.conf`.
 - With `--cwd`, `[/path/to/directory]` on the left (directory in `colour14`, brackets
   `colour12`), refreshed every second and when switching panes. On Linux this
@@ -335,6 +336,10 @@ Hard-coded:
   `colour8`, drawn on the terminal's default background. Only splits have
   borders; panes have no title row, leaving more space for terminal content.
 - Messages use `fg=colour6,bg=colour8`.
+
+Use `-c RRGGBB` or `--color RRGGBB` to set this client's status bar
+background. Supply six hexadecimal digits, such as `000000` for black. Repeat
+the option when reattaching. Omitting it uses the terminal's default background.
 
 Colours are written to the outer terminal in 256-colour form (`38;5;n` /
 `48;5;n`). Truecolor from a pane is mapped to the nearest xterm-256 entry,

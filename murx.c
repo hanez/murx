@@ -30,7 +30,7 @@
 /*
  * murx - a very small terminal multiplexer
  *
- * One binary, no config file. Shortcuts and colours are hard-coded.
+ * One binary, no config file. Shortcuts and the interface palette have built-in defaults.
  *
  *   murx [session]     attach to session (default "0"), or start it
  *   murx -h|--help     show usage and all Ctrl-A shortcut chains
@@ -1213,6 +1213,7 @@ struct Client {
     int attached;
     uint64_t order;        /* attach/resize sequence, newest client wins */
     int truecolor;
+    int32_t status_bg;
     unsigned char in[16384];
     size_t inlen;
     long long escape_since;
@@ -2111,6 +2112,13 @@ static void status_draw(Grid *g, Session *s, Client *c) {
     if (s->display.show_clock) {
         /* keep the clock visible even if a message or window list is long */
         status_right_draw(g, rx, y, clockbuf);
+    }
+
+    if (c->status_bg != DEFAULT_COLOR) {
+        for (int x = 0; x < s->w; x++) {
+            Cell *cell = grid_at(g, x, y);
+            if (cell->bg == DEFAULT_COLOR) cell->bg = c->status_bg;
+        }
     }
 }
 
@@ -3453,6 +3461,10 @@ static void handle_message(Client *c, Session *s, uint32_t type, const unsigned 
             uint32_t status = 0;
             if (len >= 20) memcpy(&status, data + 16, 4);
             if (status > 2) { c->dead = 1; return; }
+            uint32_t color = 0;
+            if (len >= 24) memcpy(&color, data + 20, 4);
+            if (color && (color >> 24) != 1) { c->dead = 1; return; }
+            c->status_bg = color ? (int32_t)color : DEFAULT_COLOR;
             if (status) {
                 s->status_bottom = status == 2;
                 session_layout(s);
@@ -4106,7 +4118,7 @@ static int terminal_truecolor(void) {
     return 1;
 }
 
-static int run_client(int fd, const char *name, unsigned char prefix, int status) {
+static int run_client(int fd, const char *name, unsigned char prefix, int status, uint32_t color) {
     struct termios saved;
     if (tty_raw(&saved) < 0) {
         fprintf(stderr, "murx: not a terminal\n");
@@ -4141,8 +4153,8 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
 
     int cols, rows;
     tty_size(&cols, &rows);
-    uint32_t attach[5] = { (uint32_t)cols, (uint32_t)rows,
-                           (uint32_t)terminal_truecolor(), prefix, (uint32_t)status };
+    uint32_t attach[6] = { (uint32_t)cols, (uint32_t)rows,
+                           (uint32_t)terminal_truecolor(), prefix, (uint32_t)status, color };
     if (send_msg(fd, C_ATTACH, attach, sizeof attach) < 0) {
         /* errno is the only clue: the server accepted the connection but the
            attach write failed, usually because it closed the socket while
@@ -4272,7 +4284,7 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
 
 static void print_help(FILE *out) {
     fprintf(out,
-        "usage: murx [-p letter] [-s top|bottom] [--cwd] [--clock] [--murx] [--hostname] [session]\n"
+        "usage: murx [-p letter] [-s top|bottom] [-c RRGGBB] [--cwd] [--clock] [--murx] [--hostname] [session]\n"
         "       murx -l | --list-sessions\n"
         "       murx -h | --help\n"
         "\n"
@@ -4284,6 +4296,9 @@ static void print_help(FILE *out) {
         "Use -s top|bottom (or --status top|bottom) to position the status line.\n"
         "New sessions default to top; an explicit choice updates all attached clients.\n"
         "Without -s, keep the session position.\n"
+        "Use -c RRGGBB (or --color RRGGBB) to set this client's status bar background.\n"
+        "Specify six hexadecimal digits, such as 000000 for black.\n"
+        "Without -c, use the terminal's default background.\n"
         "Use --cwd to show the current directory in the status bar.\n"
         "Use --clock to show the clock in the status bar.\n"
         "Use --murx to show [murx] in the status bar when --cwd is not enabled.\n"
@@ -4363,6 +4378,7 @@ int main(int argc, char **argv) {
     int argi = 1;
     unsigned char prefix = DEFAULT_PREFIX;
     int status = 0;
+    uint32_t color = 0;
     DisplayOptions display = {0, 0, 0, 0};
     int list = 0;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1]) {
@@ -4388,6 +4404,13 @@ int main(int argc, char **argv) {
                 return 2;
             }
             argi++;
+        } else if (strcmp(option, "-c") == 0 || strcmp(option, "--color") == 0) {
+            if (argi >= argc || strlen(argv[argi]) != 6 ||
+                strspn(argv[argi], "0123456789abcdefABCDEF") != 6) {
+                fprintf(stderr, "murx: %s requires six hexadecimal digits (RRGGBB)\n", option);
+                return 2;
+            }
+            color = RGB_FLAG | (uint32_t)strtoul(argv[argi++], NULL, 16);
         } else if (strcmp(option, "-s") == 0 || strcmp(option, "--status") == 0) {
             if (argi >= argc || (strcmp(argv[argi], "top") != 0 &&
                                  strcmp(argv[argi], "bottom") != 0)) {
@@ -4433,5 +4456,5 @@ int main(int argc, char **argv) {
         }
         return 1;
     }
-    return run_client(fd, name, prefix, status);
+    return run_client(fd, name, prefix, status, color);
 }
