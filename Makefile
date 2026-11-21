@@ -40,6 +40,16 @@ pkgarch: pkgclean
 	makepkg
 
 pkgsums:
+	@version=$$(sed -n 's/^#define MURX_VERSION "\([^"]*\)"$$/\1/p' murx.c); \
+	if [ -z "$$version" ]; then \
+	    echo "Could not read MURX_VERSION from murx.c" >&2; exit 1; \
+	fi; \
+	tmp=$$(mktemp .pkgsums.XXXXXX) || exit 1; \
+	trap 'rm -f "$$tmp"' 0; \
+	for recipe in APKBUILD PKGBUILD; do \
+	    sed "s/^pkgver=.*/pkgver=$$version/" "$$recipe" > "$$tmp" && \
+	        cat "$$tmp" > "$$recipe" || exit 1; \
+	done
 	abuild checksum
 	updpkgsums
 

@@ -17,6 +17,9 @@ murx \- small persistent terminal multiplexer
 .BR \-h " | " \-\-help
 .br
 .B murx
+.BR \-v " | " \-\-version
+.br
+.B murx
 .BR \-l " | " \-\-list\-sessions
 .SH DESCRIPTION
 .B murx
@@ -79,7 +82,10 @@ is not enabled. The directory takes precedence if both options are supplied.
 Show the hostname: prefix in window names and the outer terminal title.
 .TP
 .BR \-h ", " \-\-help
-Print usage and keyboard shortcuts, then exit.
+Print the program version, usage and keyboard shortcuts, then exit.
+.TP
+.BR \-v ", " \-\-version
+Print the program version and exit.
 .PP
 These four display features are disabled by default. Their options apply only
 when creating a session; they do not change a running server.

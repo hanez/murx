@@ -18,7 +18,8 @@ make
 ./murx --clock work             # show the status bar clock
 ./murx --hostname work          # show the hostname: prefix in window titles
 ./murx -l, --list-sessions      # list running sessions without attaching
-./murx --help                   # all shortcuts
+./murx --help                   # version, usage and all shortcuts
+./murx --version                # print the version and exit (also -v)
 ```
 
 Detach with `Ctrl-A d`. Run `murx` again to reattach.
@@ -392,8 +393,8 @@ that otherwise collapses pane grids to 1x1.
 
 The root directory includes [APKBUILD](APKBUILD) for Alpine Linux and
 [PKGBUILD](PKGBUILD) for Arch Linux. Both build the local source files rather
-than downloading a release. Version `0.20261116` identifies an unreleased
-snapshot; update the version and release fields when packaging a newer snapshot.
+than downloading a release. The package version comes from `MURX_VERSION` in
+`murx.c`. Adjust the package release fields separately as needed.
 Both recipes build with the default C compiler, so plain `make` works there too.
 The packages install under `/usr`, including the manual, README and license.
 
@@ -418,9 +419,9 @@ makepkg -si
 This builds the package and installs it through pacman. The recipe lists
 `x86_64` and `aarch64`; builds run on the current architecture.
 
-After changing any packaged source file (`murx.c`, `Makefile`, `murx.1`,
-`README.md`, `LICENSE` or `AUTHORS`), refresh recipe checksums with `abuild checksum`
-on Alpine and `updpkgsums` (from `pacman-contrib`) on Arch. Neither recipe
+After changing a packaged source file, run `make pkgsums` to sync both package
+versions and refresh both sets of checksums. This target requires `abuild`
+and `updpkgsums` (from `pacman-contrib`). Neither recipe
 requires a test suite; its check step runs `murx --help` as a smoke check.
 
 ## Authors

@@ -33,7 +33,8 @@
  * One binary, no config file. Shortcuts and the interface palette have built-in defaults.
  *
  *   murx [session]     attach to session (default "0"), or start it
- *   murx -h|--help     show usage and all Ctrl-A shortcut chains
+ *   murx -h|--help     show version, usage and all Ctrl-A shortcut chains
+ *   murx -v|--version  show version
  *
  * Pure C99 + POSIX (macOS / Linux / FreeBSD / OpenBSD).
  */
@@ -85,6 +86,7 @@
 #define MURX_NOIPA
 #endif
 
+#define MURX_VERSION "1.0"
 #define DEFAULT_PREFIX 0x01
 
 /* client -> server */
@@ -4353,9 +4355,11 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
 
 static void print_help(FILE *out) {
     fprintf(out,
+        "murx " MURX_VERSION "\n\n"
         "usage: murx [-p letter] [-s top|bottom] [-c RRGGBB] [--cwd] [--clock] [--murx] [--hostname] [session]\n"
         "       murx -l | --list-sessions\n"
         "       murx -h | --help\n"
+        "       murx -v | --version\n"
         "\n"
         "Attach to a running session, or start it if it is not running.\n"
         "The session name defaults to \"0\".\n"
@@ -4456,6 +4460,10 @@ int main(int argc, char **argv) {
         if (strcmp(option, "--") == 0) break;
         if (strcmp(option, "-h") == 0 || strcmp(option, "--help") == 0) {
             print_help(stdout);
+            return 0;
+        }
+        if (strcmp(option, "-v") == 0 || strcmp(option, "--version") == 0) {
+            puts("murx " MURX_VERSION);
             return 0;
         }
         if (strcmp(option, "-l") == 0 || strcmp(option, "--list-sessions") == 0) {
