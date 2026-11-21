@@ -3313,10 +3313,12 @@ static void menu_key(Client *c, Session *s, const unsigned char *buf, size_t n, 
 
 static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t n) {
     if (n > sizeof c->in - c->inlen) n = sizeof c->in - c->inlen;
-    if (n == 0 && c->inlen == 1 && c->in[0] == 27 && c->escape_since &&
+    if (n == 0 && c->escape_since &&
         now_ms() - c->escape_since >= 100) {
         Scrollback *view = scrollback_current(c, s);
         if (view) scrollback_remove(scrollback_slot(c, view->pane));
+        if (!view && !c->prefix_pending && s->cur && s->cur->active)
+            pane_write(s->cur->active, c->in, c->inlen);
         c->prefix_pending = 0;
         c->inlen = 0;
         c->escape_since = 0;
@@ -3384,8 +3386,21 @@ static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t 
             i++;
             continue;
         }
-        size_t j = i;
-        while (j < c->inlen && c->in[j] != c->prefix) j++;
+        /* screen-256color describes Home and End as CSI 1~ and CSI 4~. */
+        if (p[0] == 27) {
+            if (left == 1) break;
+            if (p[1] == '[' || p[1] == 'O') {
+                if (left == 2) break;
+                if (p[2] == 'H' || p[2] == 'F') {
+                    if (s->cur && s->cur->active)
+                        pane_write(s->cur->active, p[2] == 'H' ? "\x1b[1~" : "\x1b[4~", 4);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        size_t j = i + 1;
+        while (j < c->inlen && c->in[j] != c->prefix && c->in[j] != 27) j++;
         if (s->cur && s->cur->active) pane_write(s->cur->active, c->in + i, j - i);
         i = j;
     }
@@ -3393,7 +3408,9 @@ static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t 
         memmove(c->in, c->in + i, c->inlen - i);
         c->inlen -= i;
     }
-    if (c->inlen == 1 && c->in[0] == 27 && (scrollback_current(c, s) || c->prefix_pending)) {
+    if (c->inlen && c->in[0] == 27 &&
+        ((!c->mode && !c->locked && !scrollback_current(c, s) && !c->prefix_pending) ||
+         (c->inlen == 1 && (scrollback_current(c, s) || c->prefix_pending)))) {
         if (!c->escape_since) c->escape_since = now_ms();
     } else c->escape_since = 0;
 }
@@ -3663,6 +3680,11 @@ static void run_server(Session *s) {
         }
 
         int timeout = 200;
+        for (Client *c = s->clients; c; c = c->next) {
+            if (!c->escape_since) continue;
+            long long remaining = 100 - (now_ms() - c->escape_since);
+            if (remaining < timeout) timeout = remaining > 0 ? (int)remaining : 0;
+        }
         int pr = poll(pfds, (nfds_t)idx, timeout);
         if (pr < 0) {
             int interrupted = errno == EINTR;

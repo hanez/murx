@@ -90,6 +90,7 @@ and `murx-root`.
 - Application cursor-key mode follows the active pane, so arrow navigation
   works in programs such as Midnight Commander. Menus and prompts use normal
   cursor-key mode; detaching restores normal cursor keys in the outer terminal.
+- Home (Pos1) and End use the pane’s `screen-256color` key sequences.
 - Multiple clients can attach to the same session. The most recently attached
   or resized client sets the session size; a larger client shows the session
   centred in its terminal, while a smaller client shows the top-left part.
