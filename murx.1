@@ -204,11 +204,15 @@ Ctrl-A Page Up freezes the active pane's history and moves up one page.
 Ctrl-A [ opens the view at the current screen.
 Use Page Up and Page Down without a prefix to browse;
 q, Escape, Enter or Ctrl-C returns to live output.
+The usual window shortcuts work in scrollback, including Ctrl-A n, Ctrl-A p,
+Ctrl-A 0 through Ctrl-A 9, a double prefix, and Ctrl-A w for the window chooser.
+Use Ctrl-A c to create a window while browsing.
+Returning to a window restores its scrollback view and position.
 .PP
 Each pane retains up to 2,000 normal-screen history lines in memory.
 Programs keep running while the view is frozen.
-Scrollback is private to each client and closes when its active pane or
-window changes. Alternate-screen programs such as editors do not add history;
+Scrollback views are private to each client and saved per pane while attached.
+Alternate-screen programs such as editors do not add history;
 opening scrollback there shows only their current screen.
 Colors are retained; lines are clipped or padded to the pane width without reflow.
 Text selection and copying are not provided.

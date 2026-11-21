@@ -299,12 +299,16 @@ Two bindings worth noting: `Ctrl-A Ctrl-H`/`Ctrl-A Ctrl-L` resize the pane
 Press `Ctrl-A`, then `Page Up` to scroll back in the active pane. Use
 `Page Up` and `Page Down` without the prefix to move through history.
 `Ctrl-A [` opens scrollback at the current screen. Press `q`, Escape,
-Enter or Ctrl-C to return to live output.
+Enter or Ctrl-C to return to live output. While browsing, use the usual
+window shortcuts to switch directly, including `Ctrl-A n`, `Ctrl-A p`,
+`Ctrl-A 0` through `Ctrl-A 9`, a double prefix, or `Ctrl-A w` for the window
+chooser. Use `Ctrl-A c` to create a window while browsing. Returning to a 
+window restores its scrollback view and position.
 
 Each pane keeps up to 2,000 lines of normal screen history. The view is frozen
 while browsing; programs keep running and new output continues to be saved.
-Scrollback is private to each client. Changing the active pane or window closes
-it. Alternate-screen programs such as editors do not add history; opening
+Scrollback views are private to each client and saved per pane while attached.
+Alternate-screen programs such as editors do not add history; opening
 scrollback there shows only their current screen. History is kept in memory,
 retains colors, and is clipped or padded to the pane width without reflow.
 Restart an existing session server after upgrading to enable this feature.
@@ -313,7 +317,8 @@ Restart an existing session server after upgrading to enable this feature.
 
 Hard-coded:
 
-- Status on top by default (`-s bottom` moves it), default background (overridable with `-c`), foreground `colour12`. The palette mirrors
+- Status on top by default (`-s bottom` moves it), default background (overridable with `-c`), 
+  foreground `colour12`. The palette mirrors
   `~/.tmux.conf`.
 - With `--cwd`, `[/path/to/directory]` on the left (directory in `colour14`, brackets
   `colour12`), refreshed every second and when switching panes. On Linux this
