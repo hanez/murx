@@ -382,10 +382,11 @@ background for all attached clients. Supply six hexadecimal digits, such as
 `000000` for black. The session remembers the color across reattachments. New
 sessions use the terminal's default background unless a color is supplied.
 
-Colours are written to the outer terminal in 256-colour form (`38;5;n` /
-`48;5;n`). Truecolor from a pane is mapped to the nearest xterm-256 entry,
-unless the outer terminal advertises `COLORTERM=truecolor` and is not
-screen/tmux/linux.
+Colours are written to the outer terminal using 256-colour SGR (`38;5;n` /
+`48;5;n`) by default. RGB pane colours are passed through as 24-bit SGR when
+the outer terminal advertises `COLORTERM=truecolor` or `COLORTERM=24bit` and
+`TERM` does not start with `screen`, `tmux`, `linux`, or `dumb`; otherwise RGB
+is mapped to the nearest xterm-256 entry.
 
 The terminal window title is set to `[murx] program`, following the active
 murx window, or `[murx] hostname:program` with `--hostname`. Hostnames use

@@ -269,9 +269,10 @@ Menus use a black background with a colour12 frame, colour11 titles and
 selection, colour14 accents and dim colour8 separators and help text.
 .PP
 UTF-8, wide characters, application cursor keys, 256 colors and alternate
-screens are supported. Output uses 256-color escapes, or truecolor when
-COLORTERM advertises truecolor and TERM does not identify screen, tmux or linux.
-Otherwise truecolor is mapped to the nearest xterm-256 entry.
+screens are supported. Output uses 256-color SGR by default. RGB pane colours
+are passed through as 24-bit SGR when COLORTERM is truecolor or 24bit and TERM
+does not start with screen, tmux, linux, or dumb; otherwise RGB is mapped to
+the nearest xterm-256 entry.
 .SH SESSION SIZE
 The most recently attached or resized client determines the session size,
 with a minimum of 20 columns and 5 rows.
