@@ -65,8 +65,9 @@ and `--clock` to show the clock on the right. Use `--murx` to show `[murx]`
 on the left when `--cwd` is not enabled; the directory takes precedence if
 both are supplied. Use `--hostname` to show the `hostname:` prefix in window
 names and the outer terminal title. All four features are disabled by default.
-These options apply when starting a new session and do not change an existing
-session. To restore the previous default display, use
+These options set the initial values for a new session; the
+`Configuration...` menu can change them in a running session (see
+[Menu](#menu)). To restore the previous default display, use
 `murx --cwd --clock --hostname session`.
 
 ## Upgrading from moerx
@@ -262,11 +263,15 @@ spaces or colons. With splits, the window follows its active pane.
 
 ## Keys
 
-Prefix is `Ctrl-A`. Every shortcut below is `Ctrl-A`, then the key(s) shown.
+The default prefix is `Ctrl-A`. Every shortcut below shows the default prefix;
+if you chose a different prefix with `-p`, `--prefix`, or the Configuration
+menu, press that prefix instead. Doubling the prefix switches to the last
+window.
 
 | Chain | Action |
 | --- | --- |
-| `Ctrl-A a` | send a literal `Ctrl-A` to the pane |
+| `Ctrl-A m` | open the main menu |
+| `Ctrl-A a` | send the prefix literally to the pane |
 | `Ctrl-A c`, `Ctrl-A Ctrl-C` | new window |
 | `Ctrl-A n`, `Ctrl-A Space`, `Ctrl-A Ctrl-N`, `Ctrl-A Ctrl-@` | next window |
 | `Ctrl-A p`, `Ctrl-A Ctrl-P`, `Ctrl-A Backspace` | previous window |
@@ -293,6 +298,34 @@ Prefix is `Ctrl-A`. Every shortcut below is `Ctrl-A`, then the key(s) shown.
 Two bindings worth noting: `Ctrl-A Ctrl-H`/`Ctrl-A Ctrl-L` resize the pane
 (they do not switch windows), and `Ctrl-A k` selects the pane above while
 `Ctrl-A K` kills it.
+
+## Menu
+
+`Ctrl-A m` opens the main menu: a boxed overlay in murx blues, cyan and
+yellow on black. Move with ↑/↓ (or `j`/`k`), press Enter to select, use
+←/→ (or `h`/`l`) to enter or leave submenus, and press Escape, `q`, or
+Ctrl-C to close. Long menus scroll when the terminal is short.
+
+The main menu offers new window (tab), new pane (horizontal and vertical
+splits), close pane/window, rename, the window list, pane selection and
+resizing, and a `Session...` submenu with detach, lock, client list,
+scrollback, forced resize and kill server. `Configuration...` contains:
+
+- `Status line...` — position (top/bottom) and background (default, black
+  `000000`, grey `191a1c`).
+- `Prefix...` — this client's Ctrl-key prefix, `a` through `z`.
+- Toggles for the current directory, clock, `[murx]` label and hostname.
+- `Reset display/status defaults`.
+
+Settings changes apply immediately. Session settings affect all attached
+clients; the prefix is per-client. Nothing is written to disk, so changes
+last until the session ends or you change them again. The command-line
+options still decide the initial values when a session starts.
+
+`Ctrl-A w` still opens the window list directly, now in the same menu style;
+Left returns from it to the main menu. The menu items live in one table near
+the top of `murx.c`, so adding entries does not mean changing the drawing or
+key-handling code.
 
 ## Scrollback
 
@@ -341,6 +374,8 @@ Hard-coded:
   `colour8`, drawn on the terminal's default background. Only splits have
   borders; panes have no title row, leaving more space for terminal content.
 - Messages use `fg=colour6,bg=colour8`.
+- Menus use a black background with a `colour12` frame, `colour11` titles and
+  selection, `colour14` accents and dim `colour8` hints and separators.
 
 Use `-c RRGGBB` or `--color RRGGBB` to set the session's status bar
 background for all attached clients. Supply six hexadecimal digits, such as

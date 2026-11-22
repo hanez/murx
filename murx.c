@@ -123,6 +123,15 @@ static int send_msg(int fd, uint32_t type, const void *data, size_t len);
 #define P_MSG     C_CYAN
 #define P_MSG_BG  C_GREY
 
+/* Menu palette: murx blues/cyan/yellow on a hard black background. */
+#define MENU_BG     C_BLACK
+#define MENU_FRAME  C_BLUE
+#define MENU_TITLE  P_CURRENT
+#define MENU_ITEM   P_STATUS
+#define MENU_SELECT P_CURRENT
+#define MENU_ACCENT P_ACCENT
+#define MENU_DIM    C_GREY
+
 #define DEFAULT_COLOR (-1)
 #define RGB_FLAG 0x01000000
 #define WIDE_CONT 0xFFFFFFFFu
@@ -136,6 +145,7 @@ static int send_msg(int fd, uint32_t type, const void *data, size_t len);
 #define STATUS_INTERVAL 1
 #define SIZE_CHECK_MS 250
 #define NAME_CHECK_MS 1000
+#define MENU_MAX_DEPTH 8
 
 /* ------------------------------------------------------------------ */
 /* small helpers                                                      */
@@ -1241,8 +1251,16 @@ struct Client {
 
     Scrollback *scrollbacks;
 
+    /* Menu navigation. Pages and items live in a static table; only the
+       current page, selection and parent stack are per-client state. */
+    int menu_page;
+    int menu_top;
     int menu_sel;
-    int confirm_action;    /* 1 kill pane, 2 kill server */
+    int menu_depth;
+    int menu_parent[MENU_MAX_DEPTH];
+    int menu_parent_sel[MENU_MAX_DEPTH];
+
+    int confirm_action;    /* 1 kill pane, 2 kill server, 3 kill window */
 
     char msg[256];
     long long msg_until;
@@ -1253,7 +1271,8 @@ struct Client {
     Client *next;
 };
 
-/* Display choices are set when a session starts. */
+/* Display choices start from the session's command-line options and can be
+ * changed live from the Configuration menu. */
 typedef struct {
     int show_cwd;
     int show_clock;
@@ -1802,19 +1821,26 @@ static int text_width(const char *s) {
     return n;
 }
 
-static int draw_text(Grid *g, int x, int y, const char *s, int fg, int bg, int attr) {
+/* limit is the first column that must stay untouched (for clipping labels
+ * inside menu boxes). Passing INT_MAX gives the ordinary unbounded behaviour. */
+static int draw_text_limited(Grid *g, int x, int y, const char *s, int fg, int bg,
+                             int attr, int limit) {
     const unsigned char *p = (const unsigned char *)s;
     while (*p) {
         uint32_t cp;
         int used = utf8_decode(p, strlen((const char *)p), &cp);
         int w = cp_width(cp);
         if (w < 0) w = 1;
-        if (x > INT_MAX - w) return INT_MAX;
+        if (x > INT_MAX - w || x + w > limit) return x;
         if (cp >= 32 && cp != 0x7f) scr_put_wide(g, x, y, cp, fg, bg, attr);
         x += w;
         p += used;
     }
     return x;
+}
+
+static int draw_text(Grid *g, int x, int y, const char *s, int fg, int bg, int attr) {
+    return draw_text_limited(g, x, y, s, fg, bg, attr, INT_MAX);
 }
 
 /* Pane borders are thin box-drawing lines drawn over the terminal's own
@@ -2147,43 +2173,341 @@ static void status_draw(Grid *g, Session *s, Client *c) {
     }
 }
 
-static void menu_draw(Grid *g, Session *s, Client *c) {
-    Window *list[256];
-    int n = 0;
-    for (Window *w = s->windows; w && n < 256; w = w->next) list[n++] = w;
-    if (n == 0) return;
-    if (c->menu_sel < 0) c->menu_sel = 0;
-    if (c->menu_sel >= n) c->menu_sel = n - 1;
+/* ------------------------------------------------------------------ */
+/* extensible menu                                                    */
+/* ------------------------------------------------------------------ */
 
-    int width = 24;
-    for (int i = 0; i < n; i++) {
-        int wl = text_width(list[i]->name) + 8;
+/* To add a menu entry, append an item to one of the static tables below.
+ * New submenus need a page in menu_pages; new commands need a case in
+ * menu_action(). Drawing, navigation and key handling are table-driven. */
+enum {
+    MENU_MAIN = 0,
+    MENU_WINDOWS,          /* dynamic: one item per window */
+    MENU_SELECT_PANE,
+    MENU_RESIZE_PANE,
+    MENU_SESSION,
+    MENU_CONFIG,
+    MENU_CONFIG_STATUS,
+    MENU_CONFIG_PREFIX,
+    MENU_COUNT
+};
+
+enum { MI_ACTION, MI_SUBMENU, MI_TOGGLE, MI_CHOICE, MI_SEPARATOR };
+
+#define MIF_NONE  0
+#define MIF_PANES 0x01     /* only meaningful with more than one pane */
+
+enum {
+    ACT_NONE = 0,
+    ACT_NEW_WINDOW,
+    ACT_SPLIT_ROWS,
+    ACT_SPLIT_COLS,
+    ACT_CLOSE_PANE,
+    ACT_CLOSE_WINDOW,
+    ACT_RENAME_WINDOW,
+    ACT_PANE_LEFT,
+    ACT_PANE_DOWN,
+    ACT_PANE_UP,
+    ACT_PANE_RIGHT,
+    ACT_PANE_NEXT,
+    ACT_PANE_PREV,
+    ACT_RESIZE_LEFT,
+    ACT_RESIZE_DOWN,
+    ACT_RESIZE_UP,
+    ACT_RESIZE_RIGHT,
+    ACT_SCROLLBACK,
+    ACT_DETACH,
+    ACT_LOCK,
+    ACT_CLIENTS,
+    ACT_FIT_SIZE,
+    ACT_KILL_SERVER,
+    ACT_RESET_DISPLAY
+};
+
+enum {
+    SET_NONE = 0,
+    SET_STATUS_BOTTOM,
+    SET_STATUS_BG,
+    SET_SHOW_CWD,
+    SET_SHOW_CLOCK,
+    SET_SHOW_MURX,
+    SET_SHOW_HOSTNAME,
+    SET_PREFIX
+};
+
+typedef struct {
+    const char *label;
+    int type;              /* MI_* */
+    int id;                /* ACT_*, MENU_* or SET_* */
+    int arg;               /* setting value */
+    int flags;             /* MIF_* */
+} MenuItem;
+
+typedef struct {
+    const char *title;
+    const MenuItem *items;
+    int count;
+} MenuPage;
+
+#define MENU_ITEMS(a) ((int)(sizeof(a) / sizeof((a)[0])))
+#define MENU_SEP { "", MI_SEPARATOR, 0, 0, 0 }
+
+static const MenuItem menu_main_items[] = {
+    { "New window (tab)",      MI_ACTION, ACT_NEW_WINDOW, 0, 0 },
+    { "New pane (h. split)",   MI_ACTION, ACT_SPLIT_ROWS, 0, 0 },
+    { "New pane (v. split)",   MI_ACTION, ACT_SPLIT_COLS, 0, 0 },
+    MENU_SEP,
+    { "Close pane",            MI_ACTION, ACT_CLOSE_PANE, 0, 0 },
+    { "Close window (tab)",    MI_ACTION, ACT_CLOSE_WINDOW, 0, 0 },
+    { "Rename window",         MI_ACTION, ACT_RENAME_WINDOW, 0, 0 },
+    MENU_SEP,
+    { "Windows...",            MI_SUBMENU, MENU_WINDOWS, 0, 0 },
+    { "Select pane...",        MI_SUBMENU, MENU_SELECT_PANE, 0, MIF_PANES },
+    { "Resize pane...",        MI_SUBMENU, MENU_RESIZE_PANE, 0, MIF_PANES },
+    MENU_SEP,
+    { "Session...",            MI_SUBMENU, MENU_SESSION, 0, 0 },
+    { "Configuration...",      MI_SUBMENU, MENU_CONFIG, 0, 0 }
+};
+
+static const MenuItem menu_select_items[] = {
+    { "Pane left",             MI_ACTION, ACT_PANE_LEFT, 0, MIF_PANES },
+    { "Pane down",             MI_ACTION, ACT_PANE_DOWN, 0, MIF_PANES },
+    { "Pane up",               MI_ACTION, ACT_PANE_UP, 0, MIF_PANES },
+    { "Pane right",            MI_ACTION, ACT_PANE_RIGHT, 0, MIF_PANES },
+    MENU_SEP,
+    { "Next pane",             MI_ACTION, ACT_PANE_NEXT, 0, MIF_PANES },
+    { "Previous pane",         MI_ACTION, ACT_PANE_PREV, 0, MIF_PANES }
+};
+
+static const MenuItem menu_resize_items[] = {
+    { "Resize left",           MI_ACTION, ACT_RESIZE_LEFT, 0, MIF_PANES },
+    { "Resize right",          MI_ACTION, ACT_RESIZE_RIGHT, 0, MIF_PANES },
+    MENU_SEP,
+    { "Resize up",             MI_ACTION, ACT_RESIZE_UP, 0, MIF_PANES },
+    { "Resize down",           MI_ACTION, ACT_RESIZE_DOWN, 0, MIF_PANES }
+};
+
+static const MenuItem menu_session_items[] = {
+    { "Detach",                MI_ACTION, ACT_DETACH, 0, 0 },
+    { "Lock client",           MI_ACTION, ACT_LOCK, 0, 0 },
+    { "List attached clients", MI_ACTION, ACT_CLIENTS, 0, 0 },
+    { "Resize session to terminal", MI_ACTION, ACT_FIT_SIZE, 0, 0 },
+    MENU_SEP,
+    { "Enter scrollback",      MI_ACTION, ACT_SCROLLBACK, 0, 0 },
+    MENU_SEP,
+    { "Kill server",           MI_ACTION, ACT_KILL_SERVER, 0, 0 }
+};
+
+static const MenuItem menu_config_items[] = {
+    { "Status line...",        MI_SUBMENU, MENU_CONFIG_STATUS, 0, 0 },
+    { "Prefix...",             MI_SUBMENU, MENU_CONFIG_PREFIX, 0, 0 },
+    MENU_SEP,
+    { "Show current directory", MI_TOGGLE, SET_SHOW_CWD, 1, 0 },
+    { "Show clock",            MI_TOGGLE, SET_SHOW_CLOCK, 1, 0 },
+    { "Show [murx] label",     MI_TOGGLE, SET_SHOW_MURX, 1, 0 },
+    { "Show hostname",         MI_TOGGLE, SET_SHOW_HOSTNAME, 1, 0 },
+    MENU_SEP,
+    { "Reset display/status defaults", MI_ACTION, ACT_RESET_DISPLAY, 0, 0 }
+};
+
+static const MenuItem menu_config_status_items[] = {
+    { "Position: top",         MI_CHOICE, SET_STATUS_BOTTOM, 0, 0 },
+    { "Position: bottom",      MI_CHOICE, SET_STATUS_BOTTOM, 1, 0 },
+    MENU_SEP,
+    { "Background: default",   MI_CHOICE, SET_STATUS_BG, 0, 0 },
+    { "Background: black",     MI_CHOICE, SET_STATUS_BG, 1, 0 },
+    { "Background: grey",      MI_CHOICE, SET_STATUS_BG, 2, 0 }
+};
+
+#define PREFIX_ITEM(ch) { "Ctrl-" #ch, MI_CHOICE, SET_PREFIX, (#ch)[0] - 'a' + 1, 0 }
+static const MenuItem menu_config_prefix_items[] = {
+    PREFIX_ITEM(a), PREFIX_ITEM(b), PREFIX_ITEM(c), PREFIX_ITEM(d),
+    PREFIX_ITEM(e), PREFIX_ITEM(f), PREFIX_ITEM(g), PREFIX_ITEM(h),
+    PREFIX_ITEM(i), PREFIX_ITEM(j), PREFIX_ITEM(k), PREFIX_ITEM(l),
+    PREFIX_ITEM(m), PREFIX_ITEM(n), PREFIX_ITEM(o), PREFIX_ITEM(p),
+    PREFIX_ITEM(q), PREFIX_ITEM(r), PREFIX_ITEM(s), PREFIX_ITEM(t),
+    PREFIX_ITEM(u), PREFIX_ITEM(v), PREFIX_ITEM(w), PREFIX_ITEM(x),
+    PREFIX_ITEM(y), PREFIX_ITEM(z)
+};
+#undef PREFIX_ITEM
+
+static const MenuPage menu_pages[MENU_COUNT] = {
+    [MENU_MAIN]           = { "murx",             menu_main_items,          MENU_ITEMS(menu_main_items) },
+    [MENU_WINDOWS]        = { "Windows",          NULL,                     0 },
+    [MENU_SELECT_PANE]    = { "Select pane",      menu_select_items,        MENU_ITEMS(menu_select_items) },
+    [MENU_RESIZE_PANE]    = { "Resize pane",      menu_resize_items,        MENU_ITEMS(menu_resize_items) },
+    [MENU_SESSION]        = { "Session",          menu_session_items,       MENU_ITEMS(menu_session_items) },
+    [MENU_CONFIG]         = { "Configuration",    menu_config_items,        MENU_ITEMS(menu_config_items) },
+    [MENU_CONFIG_STATUS]  = { "Status line",      menu_config_status_items, MENU_ITEMS(menu_config_status_items) },
+    [MENU_CONFIG_PREFIX]  = { "Client prefix",    menu_config_prefix_items, MENU_ITEMS(menu_config_prefix_items) }
+};
+
+static const MenuPage *menu_page_of(Client *c) {
+    if (c->menu_page < 0 || c->menu_page >= MENU_COUNT) return NULL;
+    return &menu_pages[c->menu_page];
+}
+
+static int menu_window_count(Session *s) {
+    int n = 0;
+    for (Window *w = s->windows; w; w = w->next) n++;
+    return n;
+}
+
+static int menu_count(Client *c, Session *s) {
+    if (c->menu_page == MENU_WINDOWS) return menu_window_count(s);
+    const MenuPage *page = menu_page_of(c);
+    return page ? page->count : 0;
+}
+
+static const MenuItem *menu_item_at(Client *c, int i) {
+    const MenuPage *page = menu_page_of(c);
+    if (!page || c->menu_page == MENU_WINDOWS || i < 0 || i >= page->count) return NULL;
+    return &page->items[i];
+}
+
+static const char *menu_item_label(Client *c, Session *s, int i) {
+    if (c->menu_page == MENU_WINDOWS) {
+        /* Single-threaded server: a scratch buffer is safe for drawing. */
+        static char label[192];
+        int k = 0;
+        for (Window *w = s->windows; w; w = w->next, k++) {
+            if (k == i) {
+                snprintf(label, sizeof label, "%d: %s", w->index, w->name);
+                return label;
+            }
+        }
+        return "";
+    }
+    const MenuItem *it = menu_item_at(c, i);
+    return it ? it->label : "";
+}
+
+static int menu_item_enabled(Session *s, const MenuItem *it) {
+    if (!it || it->type == MI_SEPARATOR) return 0;
+    if (!(it->flags & MIF_PANES)) return 1;
+    Window *w = s->cur;
+    return w && w->root && layout_pane_count(w->root) >= 2;
+}
+
+static int menu_setting_on(Session *s, Client *c, const MenuItem *it) {
+    switch (it->id) {
+    case SET_STATUS_BOTTOM: return (s->status_bottom ? 1 : 0) == it->arg;
+    case SET_STATUS_BG: {
+        int32_t want = it->arg == 1 ? (int32_t)RGB_FLAG :
+                       it->arg == 2 ? (int32_t)(RGB_FLAG | 0x191a1c) : 0;
+        return s->status_bg == want;
+    }
+    case SET_SHOW_CWD:      return s->display.show_cwd == it->arg;
+    case SET_SHOW_CLOCK:    return s->display.show_clock == it->arg;
+    case SET_SHOW_MURX:     return s->display.show_murx == it->arg;
+    case SET_SHOW_HOSTNAME: return s->display.show_hostname == it->arg;
+    case SET_PREFIX:        return c->prefix == it->arg;
+    default: return 0;
+    }
+}
+
+static void menu_draw(Grid *g, Session *s, Client *c) {
+    const MenuPage *page = menu_page_of(c);
+    if (!page) { c->mode = 0; return; }
+    int count = menu_count(c, s);
+    if (count < 1) { c->mode = 0; return; }
+
+    if (c->menu_sel < 0) c->menu_sel = 0;
+    if (c->menu_sel >= count) c->menu_sel = count - 1;
+
+    int bottom = s->h - (s->status_bottom ? 1 : 0);
+    if (bottom < 1) bottom = 1;
+    const char *hint_text = "Up/Down move   Enter select   Esc close";
+    int hint = bottom >= 6;
+    int maxrows = bottom - 2 - (hint ? 2 : 0);
+    if (maxrows < 1) maxrows = 1;
+    if (c->menu_top < 0) c->menu_top = 0;
+    if (c->menu_top > count - maxrows) c->menu_top = count - maxrows;
+    if (c->menu_top < 0) c->menu_top = 0;
+    if (c->menu_sel < c->menu_top) c->menu_top = c->menu_sel;
+    if (c->menu_sel >= c->menu_top + maxrows) c->menu_top = c->menu_sel - maxrows + 1;
+    int shown = count - c->menu_top;
+    if (shown > maxrows) shown = maxrows;
+    if (shown < 1) shown = 1;
+
+    int width = text_width(page->title) + 8;
+    for (int i = 0; i < count; i++) {
+        int wl = text_width(menu_item_label(c, s, i)) + 10;
         if (wl > width) width = wl;
     }
-    if (width > s->w - 2) width = s->w - 2;
-    if (width < 10) width = 10;
-    int x0 = 1, y0 = 1;
-    int h = n + 2;
-    int bottom = s->h - (s->status_bottom ? 1 : 0);
-    if (y0 + h > bottom) h = bottom - y0;
-    for (int y = y0; y < y0 + h; y++) {
-        for (int x = x0; x < x0 + width; x++) {
-            scr_put(g, x, y, ' ', C_BLUE, C_GREY, 0);
-        }
+    if (hint) {
+        int hl = text_width(hint_text) + 4;
+        if (hl > width) width = hl;
     }
-    int rows = h - 2;
-    for (int i = 0; i < rows && i < n; i++) {
-        char line[320];
-        snprintf(line, sizeof line, " %d: %s ", list[i]->index, list[i]->name);
-        int sel = (i == c->menu_sel);
-        int fg = sel ? C_BLACK : C_BLUE;
-        int bg = sel ? C_BLUE : C_GREY;
-        int x = x0;
-        for (const char *p = line; *p && x < x0 + width; p++) {
-            scr_put(g, x++, y0 + 1 + i, (unsigned char)*p, fg, bg, 0);
-        }
-        while (x < x0 + width) scr_put(g, x++, y0 + 1 + i, ' ', fg, bg, 0);
+    if (width > s->w) width = s->w;
+    if (width < 8) width = s->w < 8 ? s->w : 8;
+
+    int height = shown + 2 + (hint ? 2 : 0);
+    int x0 = (s->w - width) / 2;
+    if (x0 < 0) x0 = 0;
+    int y0 = (bottom - height) / 2;
+    if (y0 < 0) y0 = 0;
+    int x1 = x0 + width - 1;
+
+    for (int y = y0; y < y0 + height; y++) {
+        for (int x = x0; x <= x1; x++) scr_put(g, x, y, ' ', MENU_ITEM, MENU_BG, 0);
     }
+
+    scr_put(g, x0, y0, 0x256D, MENU_FRAME, MENU_BG, 0);           /* ╭ */
+    scr_put(g, x1, y0, 0x256E, MENU_FRAME, MENU_BG, 0);           /* ╮ */
+    for (int x = x0 + 1; x < x1; x++) scr_put(g, x, y0, 0x2500, MENU_FRAME, MENU_BG, 0);
+    char title[160];
+    snprintf(title, sizeof title, " %s ", page->title);
+    draw_text_limited(g, x0 + 2, y0, title, MENU_TITLE, MENU_BG, A_BOLD, x1);
+
+    for (int i = 0; i < shown; i++) {
+        int idx = c->menu_top + i;
+        int y = y0 + 1 + i;
+        const MenuItem *it = menu_item_at(c, idx);
+        int selected = idx == c->menu_sel;
+        if (it && it->type == MI_SEPARATOR) {
+            scr_put(g, x0, y, 0x251C, MENU_FRAME, MENU_BG, 0);
+            scr_put(g, x1, y, 0x2524, MENU_FRAME, MENU_BG, 0);
+            for (int x = x0 + 1; x < x1; x++)
+                scr_put(g, x, y, 0x2500, MENU_DIM, MENU_BG, A_DIM);
+            continue;
+        }
+        scr_put(g, x0, y, 0x2502, MENU_FRAME, MENU_BG, 0);
+        scr_put(g, x1, y, 0x2502, MENU_FRAME, MENU_BG, 0);
+        int enabled = menu_item_enabled(s, it);
+        int fg = !enabled ? MENU_DIM : selected ? MENU_SELECT : MENU_ITEM;
+        int attr = !enabled ? A_DIM : selected ? A_BOLD : 0;
+        scr_put(g, x0 + 2, y, selected ? '>' : ' ', MENU_ACCENT, MENU_BG, A_BOLD);
+        draw_text_limited(g, x0 + 4, y, menu_item_label(c, s, idx),
+                          fg, MENU_BG, attr, x1 - 5);
+        if (it && (it->type == MI_TOGGLE || it->type == MI_CHOICE)) {
+            int on = menu_setting_on(s, c, it);
+            draw_text_limited(g, x1 - 4, y, on ? "[x]" : "[ ]",
+                              on ? MENU_ACCENT : MENU_DIM, MENU_BG, 0, x1);
+        } else if (it && it->type == MI_SUBMENU) {
+            scr_put(g, x1 - 2, y, 0x25B8, MENU_ACCENT, MENU_BG, 0);  /* ▸ */
+        }
+        if (c->menu_top > 0 && i == 0)
+            scr_put(g, x1 - 1, y, 0x25B2, MENU_ACCENT, MENU_BG, 0); /* ▲ */
+        else if (c->menu_top + shown < count && i == shown - 1)
+            scr_put(g, x1 - 1, y, 0x25BC, MENU_ACCENT, MENU_BG, 0); /* ▼ */
+    }
+
+    if (hint) {
+        int y = y0 + 1 + shown;
+        scr_put(g, x0, y, 0x251C, MENU_FRAME, MENU_BG, 0);
+        scr_put(g, x1, y, 0x2524, MENU_FRAME, MENU_BG, 0);
+        for (int x = x0 + 1; x < x1; x++) scr_put(g, x, y, 0x2500, MENU_FRAME, MENU_BG, 0);
+        int hx = x0 + (width - text_width(hint_text)) / 2;
+        scr_put(g, x0, y + 1, 0x2502, MENU_FRAME, MENU_BG, 0);
+        scr_put(g, x1, y + 1, 0x2502, MENU_FRAME, MENU_BG, 0);
+        draw_text_limited(g, hx, y + 1, hint_text, MENU_DIM, MENU_BG, A_DIM, x1 - 1);
+    }
+
+    int by = y0 + height - 1;
+    scr_put(g, x0, by, 0x2570, MENU_FRAME, MENU_BG, 0);           /* ╰ */
+    scr_put(g, x1, by, 0x256F, MENU_FRAME, MENU_BG, 0);           /* ╯ */
+    for (int x = x0 + 1; x < x1; x++) scr_put(g, x, by, 0x2500, MENU_FRAME, MENU_BG, 0);
 }
 
 static void compose(Session *s, Client *c, Grid *out) {
@@ -2915,14 +3239,50 @@ static void client_unlock(Client *c) {
     client_invalidate(c);
 }
 
-static void start_menu(Client *c, Session *s) {
+static void menu_open_page(Client *c, int page, int sel) {
     c->mode = 2;
-    c->menu_sel = 0;
-    int i = 0;
-    for (Window *w = s->windows; w; w = w->next) {
-        if (w == s->cur) c->menu_sel = i;
-        i++;
+    c->menu_page = page;
+    c->menu_sel = sel < 0 ? 0 : sel;
+    c->menu_top = 0;
+    c->menu_depth = 0;
+}
+
+static void menu_open(Client *c) {
+    menu_open_page(c, MENU_MAIN, 0);
+}
+
+/* Ctrl-A w still opens the window list directly; Left returns to the main
+ * menu, Escape closes it. */
+static void start_menu(Client *c, Session *s) {
+    int sel = 0, i = 0;
+    for (Window *w = s->windows; w; w = w->next, i++) {
+        if (w == s->cur) sel = i;
     }
+    menu_open_page(c, MENU_WINDOWS, sel);
+    c->menu_parent[0] = MENU_MAIN;
+    c->menu_parent_sel[0] = 0;
+    c->menu_depth = 1;
+}
+
+static void menu_enter(Client *c, int page) {
+    if (c->menu_depth >= MENU_MAX_DEPTH || page < 0 || page >= MENU_COUNT) return;
+    c->menu_parent[c->menu_depth] = c->menu_page;
+    c->menu_parent_sel[c->menu_depth] = c->menu_sel;
+    c->menu_depth++;
+    c->menu_page = page;
+    c->menu_sel = 0;
+    c->menu_top = 0;
+}
+
+static void menu_back(Client *c) {
+    if (c->menu_depth <= 0) {
+        c->mode = 0;
+        return;
+    }
+    c->menu_depth--;
+    c->menu_page = c->menu_parent[c->menu_depth];
+    c->menu_sel = c->menu_parent_sel[c->menu_depth];
+    c->menu_top = 0;
 }
 
 static void start_rename_prompt(Client *c, Session *s) {
@@ -3003,6 +3363,111 @@ static void backscroll_start(Client *c, Session *s, int page_up) {
     if (view->offset > count) view->offset = count;
 }
 
+static void report_clients(Client *c, Session *s) {
+    int n = 0;
+    for (Client *it = s->clients; it; it = it->next) if (it->attached) n++;
+    client_message(c, "%d client%s attached", n, n == 1 ? "" : "s");
+}
+
+static void fit_session_to_client(Client *c, Session *s) {
+    /* Make this client's terminal the size source again, even if another
+       client attached or resized more recently. */
+    c->order = client_next_order(s);
+    session_recalc_size(s);
+    invalidate_clients(s);
+    s->redraw = 1;
+    client_message(c, "Session resized to %dx%d", s->w, s->h);
+}
+
+static void menu_apply_setting(Client *c, Session *s, const MenuItem *it) {
+    switch (it->id) {
+    case SET_STATUS_BOTTOM:
+        s->status_bottom = it->arg ? 1 : 0;
+        session_layout(s);
+        s->redraw = 1;
+        break;
+    case SET_STATUS_BG:
+        s->status_bg = it->arg == 1 ? (int32_t)RGB_FLAG :
+                       it->arg == 2 ? (int32_t)(RGB_FLAG | 0x191a1c) : 0;
+        s->redraw = 1;
+        break;
+    case SET_SHOW_CWD:      s->display.show_cwd = it->arg ? 1 : 0; break;
+    case SET_SHOW_CLOCK:    s->display.show_clock = it->arg ? 1 : 0; break;
+    case SET_SHOW_MURX:     s->display.show_murx = it->arg ? 1 : 0; break;
+    case SET_SHOW_HOSTNAME: s->display.show_hostname = it->arg ? 1 : 0; break;
+    case SET_PREFIX:        c->prefix = (unsigned char)it->arg; break;
+    default: return;
+    }
+    /* Window names carry the hostname setting, so refresh them at once. */
+    s->last_name_check = 0;
+    invalidate_clients(s);
+}
+
+static void menu_action(Client *c, Session *s, int action) {
+    c->mode = 0;
+    switch (action) {
+    case ACT_NEW_WINDOW:   new_window(s); break;
+    case ACT_SPLIT_ROWS:   split_pane(s, L_ROWS); break;
+    case ACT_SPLIT_COLS:   split_pane(s, L_COLS); break;
+    case ACT_CLOSE_PANE:   start_confirm(c, 1, "kill-pane? (y/n) "); break;
+    case ACT_CLOSE_WINDOW: start_confirm(c, 3, "kill-window? (y/n) "); break;
+    case ACT_RENAME_WINDOW: start_rename_prompt(c, s); break;
+    case ACT_PANE_LEFT:    select_pane_dir(s, -1, 0); break;
+    case ACT_PANE_DOWN:    select_pane_dir(s, 0, 1); break;
+    case ACT_PANE_UP:      select_pane_dir(s, 0, -1); break;
+    case ACT_PANE_RIGHT:   select_pane_dir(s, 1, 0); break;
+    case ACT_PANE_NEXT:    cycle_pane(s, 1); break;
+    case ACT_PANE_PREV:    cycle_pane(s, -1); break;
+    case ACT_RESIZE_LEFT:  resize_pane_dir(s, -1, 0, 8); break;
+    case ACT_RESIZE_RIGHT: resize_pane_dir(s, 1, 0, 8); break;
+    case ACT_RESIZE_UP:    resize_pane_dir(s, 0, -1, 5); break;
+    case ACT_RESIZE_DOWN:  resize_pane_dir(s, 0, 1, 5); break;
+    case ACT_SCROLLBACK:   backscroll_start(c, s, 0); break;
+    case ACT_DETACH: {
+        char m[128];
+        snprintf(m, sizeof m, "[detached (from session %s)]", s->name);
+        client_detach(c, m);
+        break;
+    }
+    case ACT_LOCK:     client_lock(c); break;
+    case ACT_CLIENTS:  report_clients(c, s); break;
+    case ACT_FIT_SIZE: fit_session_to_client(c, s); break;
+    case ACT_KILL_SERVER: start_confirm(c, 2, "kill-server? (y/n) "); break;
+    case ACT_RESET_DISPLAY:
+        memset(&s->display, 0, sizeof s->display);
+        s->status_bottom = 0;
+        s->status_bg = 0;
+        session_layout(s);
+        s->last_name_check = 0;
+        s->redraw = 1;
+        invalidate_clients(s);
+        client_message(c, "Display and status defaults restored");
+        break;
+    default: break;
+    }
+}
+
+static void menu_activate(Client *c, Session *s) {
+    int count = menu_count(c, s);
+    if (c->menu_sel < 0 || c->menu_sel >= count) return;
+    if (c->menu_page == MENU_WINDOWS) {
+        int i = 0;
+        for (Window *w = s->windows; w; w = w->next, i++) {
+            if (i == c->menu_sel) {
+                select_window(s, w);
+                break;
+            }
+        }
+        c->mode = 0;
+        return;
+    }
+    const MenuItem *it = menu_item_at(c, c->menu_sel);
+    if (!it || it->type == MI_SEPARATOR || !menu_item_enabled(s, it)) return;
+    if (it->type == MI_ACTION) menu_action(c, s, it->id);
+    else if (it->type == MI_SUBMENU) menu_enter(c, it->id);
+    else menu_apply_setting(c, s, it);
+}
+
 /* Return zero for an incomplete page-key sequence. */
 static size_t backscroll_key(Client *c, Scrollback *view, const unsigned char *buf, size_t n) {
     if (buf[0] == 27 && n == 1) return 0;
@@ -3067,12 +3532,12 @@ static void prefix_command(Client *c, Session *s, int key) {
         client_detach(c, m);
         break;
     }
-    case '*': {
-        int n = 0;
-        for (Client *it = s->clients; it; it = it->next) if (it->attached) n++;
-        client_message(c, "%d client%s attached", n, n == 1 ? "" : "s");
+    case 'm':
+        menu_open(c);
         break;
-    }
+    case '*':
+        report_clients(c, s);
+        break;
     case 0x00:
     case 0x0e:
     case ' ':
@@ -3128,13 +3593,7 @@ static void prefix_command(Client *c, Session *s, int key) {
         client_message(c, "Configuration Reloaded!");
         break;
     case 'R':
-        /* Make this client's terminal the size source again, even if another
-           client attached or resized more recently. */
-        c->order = client_next_order(s);
-        session_recalc_size(s);
-        invalidate_clients(s);
-        s->redraw = 1;
-        client_message(c, "Session resized to %dx%d", s->w, s->h);
+        fit_session_to_client(c, s);
         break;
     case '-':
         split_pane(s, L_ROWS);
@@ -3257,57 +3716,68 @@ static void confirm_key(Client *c, Session *s, unsigned char b) {
     }
 }
 
+/* Move the selection, skipping separators and entries that cannot be used
+ * in the current state (for example pane commands with a single pane). */
+static void menu_move(Client *c, Session *s, int dir) {
+    int count = menu_count(c, s);
+    if (count < 1) return;
+    for (int step = 0; step < count; step++) {
+        c->menu_sel += dir;
+        if (c->menu_sel < 0) c->menu_sel = count - 1;
+        else if (c->menu_sel >= count) c->menu_sel = 0;
+        const MenuItem *it = menu_item_at(c, c->menu_sel);
+        if (c->menu_page == MENU_WINDOWS || (it && menu_item_enabled(s, it))) return;
+    }
+}
+
 static void menu_key(Client *c, Session *s, const unsigned char *buf, size_t n, size_t *used) {
     *used = 1;
-    unsigned char b = buf[0];
-    int count = 0;
-    for (Window *w = s->windows; w; w = w->next) count++;
-    if (count < 1) {
+    if (menu_count(c, s) < 1) {
         c->mode = 0;
         return;
+    }
+    unsigned char b = buf[0];
+    int key = b;
+    if (b == 0x1b) {
+        if (n < 2) { *used = 0; return; }
+        if (buf[1] == '[' || buf[1] == 'O') {
+            if (n < 3) { *used = 0; return; }
+            if (buf[2] == 'A') key = K_UP;
+            else if (buf[2] == 'B') key = K_DOWN;
+            else if (buf[2] == 'C') key = K_RIGHT;
+            else if (buf[2] == 'D') key = K_LEFT;
+            else key = 0;
+            *used = 3;
+            if (!key) return;
+        } else {
+            c->mode = 0;
+            return;
+        }
     }
 
-    if (b == 0x1b) {
-        int key = 0;
-        if (b == 0x1b) {
-            if (n < 2) { *used = 0; return; }
-            if (buf[1] == '[' || buf[1] == 'O') {
-                if (n < 3) { *used = 0; return; }
-                if (buf[2] == 'A') key = K_UP;
-                else if (buf[2] == 'B') key = K_DOWN;
-                *used = 3;
-                if (!key) { c->mode = 0; return; }
-            } else {
-                c->mode = 0;
-                *used = 1;
-                return;
-            }
-        } else {
-            key = b;
-        }
-        if (key == K_UP) {
-            c->menu_sel--;
-            if (c->menu_sel < 0) c->menu_sel = count - 1;
-        } else {
-            c->menu_sel++;
-            if (c->menu_sel >= count) c->menu_sel = 0;
-        }
-        return;
+    switch (key) {
+    case K_UP: case 'k':
+        menu_move(c, s, -1);
+        break;
+    case K_DOWN: case 'j':
+        menu_move(c, s, 1);
+        break;
+    case K_LEFT: case 'h':
+        menu_back(c);
+        break;
+    case K_RIGHT: case 'l': {
+        const MenuItem *it = menu_item_at(c, c->menu_sel);
+        if (it && it->type == MI_SUBMENU && menu_item_enabled(s, it)) menu_enter(c, it->id);
+        break;
     }
-    if (b == 'k') { c->menu_sel = (c->menu_sel + count - 1) % count; return; }
-    if (b == 'j') { c->menu_sel = (c->menu_sel + 1) % count; return; }
-    if (b == 'q') { c->mode = 0; return; }
-    if (b == '\r' || b == '\n') {
-        int i = 0;
-        for (Window *w = s->windows; w; w = w->next) {
-            if (i == c->menu_sel) {
-                select_window(s, w);
-                break;
-            }
-            i++;
-        }
+    case '\r': case '\n':
+        menu_activate(c, s);
+        break;
+    case 'q': case 0x03:
         c->mode = 0;
-        return;
+        break;
+    default:
+        break;
     }
 }
 
@@ -3317,6 +3787,7 @@ static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t 
         now_ms() - c->escape_since >= 100) {
         Scrollback *view = scrollback_current(c, s);
         if (view) scrollback_remove(scrollback_slot(c, view->pane));
+        if (c->mode == 2) c->mode = 0;             /* a lone Escape closes menus */
         c->prefix_pending = 0;
         c->inlen = 0;
         c->escape_since = 0;
@@ -3393,7 +3864,8 @@ static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t 
         memmove(c->in, c->in + i, c->inlen - i);
         c->inlen -= i;
     }
-    if (c->inlen == 1 && c->in[0] == 27 && (scrollback_current(c, s) || c->prefix_pending)) {
+    if (c->inlen == 1 && c->in[0] == 27 &&
+        (c->mode == 2 || scrollback_current(c, s) || c->prefix_pending)) {
         if (!c->escape_since) c->escape_since = now_ms();
     } else c->escape_since = 0;
 }
@@ -4350,13 +4822,17 @@ static void print_help(FILE *out) {
         "Use --clock to show the clock in the status bar.\n"
         "Use --murx to show [murx] in the status bar when --cwd is not enabled.\n"
         "Use --hostname to show the hostname: prefix in window titles.\n"
-        "These four features default to off and apply only to new sessions.\n"
+        "These four features default to off and set a new session's values;\n"
+         "the Configuration menu can change them in a running session.\n"
         "\n"
         "Use -p x (or --prefix x) to choose Ctrl-X as this client's prefix.\n"
         "Letters a through z are supported (case-insensitive); the default is a (Ctrl-A).\n"
         "The shortcuts below use the default Ctrl-A prefix. Replace it with\n"
         "your chosen prefix, including both keys in the last-window shortcut.\n"
         "Prefix then a sends the chosen prefix literally to the pane.\n"
+        "\n"
+        "Menu\n"
+        "  Ctrl-A m              open the main menu\n"
         "\n"
         "Windows\n"
         "  Ctrl-A c              new window\n"
@@ -4407,7 +4883,9 @@ static void print_help(FILE *out) {
         "  Ctrl-A Ctrl-D         detach\n"
         "  Ctrl-A \\              kill server (confirm)\n"
         "\n"
-        "Inside menus use Up/Down or j/k and Enter; q or Escape closes.\n"
+        "Inside menus use Up/Down or j/k, Left/Right or h/l for submenus,\n"
+        "Enter to select and q or Escape to close. The Configuration menu holds\n"
+        "status line, prefix and display settings.\n"
         "Inside prompts use Enter to accept, Escape to cancel, Ctrl-U to clear.\n");
 }
 

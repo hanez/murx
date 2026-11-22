@@ -81,8 +81,8 @@ Show the hostname: prefix in window names and the outer terminal title.
 .BR \-h ", " \-\-help
 Print usage and keyboard shortcuts, then exit.
 .PP
-These four display features are disabled by default. Their options apply only
-when creating a session; they do not change a running server.
+These four display features are disabled by default and set a new session's
+values; the Configuration menu can change them in a running session.
 To restore the previous default display, use
 .BR "murx \-\-cwd \-\-clock \-\-hostname session" .
 .SH KEY BINDINGS
@@ -96,8 +96,13 @@ Ctrl-X Ctrl-X switches windows and Ctrl-X x locks the client.
 Other Ctrl-A input is passed to the pane when a different prefix is selected.
 
 .TP
+.B Ctrl\-A m
+open the main menu.
+The menu has submenus for panes, sessions and configuration;
+Ctrl\-A w opens the window list in the same style.
+.TP
 .B Ctrl\-A a
-send a literal Ctrl\-A to the pane.
+send the configured prefix literally to the pane.
 
 .TP
 .B Ctrl\-A c, Ctrl\-A Ctrl\-C
@@ -195,8 +200,18 @@ Ctrl-A k selects the pane above; Ctrl-A K kills a pane.
 Renaming a window is temporary until the next automatic name refresh.
 Ctrl-A r only displays a message: there is no configuration file to reload.
 .SS Menus, prompts and confirmations
-In menus use Up/Down or j/k and Enter; q or Escape closes the menu.
-In prompts use Enter to accept, Escape to cancel and Ctrl-U to clear.
+The main menu offers new windows and panes, closing and renaming, the window
+list, pane selection and resizing, and Session and Configuration submenus.
+Use Up/Down or j/k to move and Enter to select. Left/Right or h/l enter and
+leave submenus; q, Escape, or Ctrl-C closes the menu. Long menus scroll.
+The Configuration submenu sets the status line position and background
+(default, black or grey), the client prefix, display toggles for the directory,
+clock, [murx] label and hostname, and resets display/status defaults (display toggles, status position and
+background). Session
+settings affect all attached clients; the prefix is per-client. Changes take
+effect immediately and are not saved to disk.
+In prompts use Enter to accept, Escape or Ctrl-C to cancel, Backspace or Ctrl-H
+to delete, and Ctrl-U to clear.
 Confirm destructive actions with y, Y or Enter; n, N, Escape or Ctrl-C cancels.
 The client lock is cosmetic: Enter unlocks it without a password.
 .SH SCROLLBACK
@@ -250,6 +265,8 @@ Over SSH the shell must report root status; install the hooks in root's shell
 as well as the regular user's. This is a visual hint, not a security indicator.
 Borders use colour8 on the terminal's default background.
 Messages use foreground colour6 and background colour8.
+Menus use a black background with a colour12 frame, colour11 titles and
+selection, colour14 accents and dim colour8 separators and help text.
 .PP
 UTF-8, wide characters, application cursor keys, 256 colors and alternate
 screens are supported. Output uses 256-color escapes, or truecolor when
