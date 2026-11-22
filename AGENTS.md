@@ -29,10 +29,12 @@ outside the repo for geometry/logic checks; do not leave test files behind.
 
 - Windows use a binary `Layout` tree: `L_COLS` (left/right split) or
   `L_ROWS` (top/bottom split), with `Layout` x/y/w/h plus a `Pane` leaf.
-- `layout_apply()` assigns pane content rectangles. Each pane has a title row
-  above its content, so `pane->y = layout->y + 1`.
-- Splits reserve one border column/row between children, so pane rectangles do
-  not touch; vertical stacks have a two-row visual gap including the title row.
+- `layout_apply()` assigns pane content rectangles. With pane titles shown
+  (default), each leaf reserves its top row for a title and sets
+  `pane->y = layout->y + 1`; with `--hide-pane-titles`, content fills the leaf.
+- Splits reserve one border column/row between children. With titles shown,
+  horizontal splits use the lower pane's title row as the separator; with titles
+  hidden, horizontal splits draw a border row like vertical splits.
 - Pane movement must be based on rectangle edges, not centres. A pane is only
   to the right if `p->x >= a->x + a->w` (and similar for the other directions).
   Centre comparison wrongly classifies tall/wide panes that merely extend past

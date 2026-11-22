@@ -27,6 +27,9 @@ The default session name is
 Each session has its own server and Unix socket.
 Detaching leaves programs running; run the same command to reattach.
 The session ends when its last pane exits or its server is killed.
+murx refuses to start or attach inside another murx session; use
+.B env \-u MURX murx
+to override intentionally.
 .PP
 Multiple clients may attach simultaneously and share windows and the active
 pane. Each client has its own prefix, menus, lock and scrollback view.
@@ -78,11 +81,15 @@ is not enabled. The directory takes precedence if both options are supplied.
 .B \-\-hostname
 Show the hostname: prefix in window names and the outer terminal title.
 .TP
+.B \-\-hide-pane-titles
+Hide the title row above each pane. Pane titles are shown by default.
+.TP
 .BR \-h ", " \-\-help
 Print usage and keyboard shortcuts, then exit.
 .PP
-These four display features are disabled by default and set a new session's
-values; the Configuration menu can change them in a running session.
+Display options set a new session's values; the Configuration menu can
+change them in a running session. The cwd, clock, [murx] label and hostname
+options are off by default; pane titles are shown by default.
 To restore the previous default display, use
 .BR "murx \-\-cwd \-\-clock \-\-hostname session" .
 .SH KEY BINDINGS
@@ -255,7 +262,11 @@ The outer terminal title follows [murx] program, or [murx] hostname:program
 with --hostname. Its [murx] prefix is always present; --murx controls only
 the status label.
 Hostnames are shortened at the first dot.
-Panes have no title rows; only splits have separator lines.
+By default each pane has a title row above its content showing
+[R N: title R], where N is the pane number. Active pane titles use colour7
+brackets/numbers, colour11 separator and colour15 title; inactive panes use
+colour8, colour3 and colour12. Use --hide-pane-titles or the Configuration
+menu to hide title rows. Splits use thin box-drawing lines in colour8.
 The status uses colour12, accents colour14 and the current window colour11.
 The current window name turns bright red (colour9) when its active pane's
 foreground process is su or has effective UID 0, including programs launched
@@ -417,6 +428,12 @@ paths containing spaces may display differently from the Zsh hook.
 Command text is never evaluated by these hooks.
 Both examples emit invisible terminal updates rather than visible command lines.
 .SH ENVIRONMENT
+.TP
+.B MURX
+Set inside panes to the session name. murx refuses to start or attach when
+this variable is set, preventing nested sessions. Use
+.B env \-u MURX murx
+to override intentionally.
 .TP
 .B SHELL
 Login shell started in new panes. If unset or empty, /usr/bin/zsh is used

@@ -65,10 +65,11 @@ Use `--cwd` to show the current directory on the left of the status bar,
 and `--clock` to show the clock on the right. Use `--murx` to show `[murx]`
 on the left when `--cwd` is not enabled; the directory takes precedence if
 both are supplied. Use `--hostname` to show the `hostname:` prefix in window
-names and the outer terminal title. All four features are disabled by default.
-These options set the initial values for a new session; the
-`Configuration...` menu can change them in a running session (see
-[Menu](#menu)). To restore the previous default display, use
+names and the outer terminal title. These display options are disabled by
+default. Use `--hide-pane-titles` to hide the title row above each pane;
+pane titles are shown by default. These options set the initial values for a
+new session; the `Configuration...` menu can change them in a running session
+(see [Menu](#menu)). To restore the previous default display, use
 `murx --cwd --clock --hostname session`.
 
 ## Upgrading from moerx
@@ -97,12 +98,13 @@ and `murx-root`.
   or resized client sets the session size; a larger client shows the session
   centred in its terminal, while a smaller client shows the top-left part.
   `Ctrl-A R` forces the session back to the current client's terminal size.
-- Panes run `$SHELL` as a login shell with `TERM=screen-256color`.
-  They inherit the launching process's umask, so builds keep their usual file
-  permissions. After upgrading from a version that forced `077`, restart the
-  session server to apply the fix. In an existing shell, `umask 022` restores
-  typical public file permissions for subsequent commands, including builds
-  published with `rsync -a`.
+- Panes run `$SHELL` as a login shell with `TERM=screen-256color` and
+  `MURX=<session>`. They inherit the launching process's umask, so builds keep
+  their usual file permissions. After upgrading from a version that forced `077`,
+  restart the session server to apply the fix. In an existing shell, `umask 022`
+  restores typical public file permissions for subsequent commands, including
+  builds published with `rsync -a`. murx refuses to start inside another murx
+  session; use `env -u MURX murx` to override intentionally.
 - Window names show `program` for the foreground program in their active pane,
   refreshed every second, including in inactive windows. With `--hostname`,
   they show `hostname:program` (for example `laptop:zsh` or `laptop:vim`). When a program exits, the name returns to the shell. For
@@ -373,8 +375,11 @@ Hard-coded:
   report root status; install them in each remote shell, including root's.
   A root shell that does not run the hooks cannot report its privilege change.
 - Pane borders are thin box-drawing lines (`─`, `│`, `┬`, `┼`, ...) in
-  `colour8`, drawn on the terminal's default background. Only splits have
-  borders; panes have no title row, leaving more space for terminal content.
+  `colour8`, drawn on the terminal's default background. By default, the row
+  above each pane is a title bar showing `[N: title]`: on the active pane,
+  brackets/numbers use `colour7`, separator `colour11`, title `colour15`; on
+  inactive panes, `colour8`, `colour3`, `colour12`. Use `--hide-pane-titles`
+  or the Configuration menu to hide title rows and give panes more space.
 - Messages use `fg=colour6,bg=colour8`.
 - Menus use a black background with a `colour12` frame, `colour11` titles and
   selection, `colour14` accents and dim `colour8` hints and separators.

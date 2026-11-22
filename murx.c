@@ -1278,6 +1278,7 @@ typedef struct {
     int show_clock;
     int show_murx;
     int show_hostname;
+    int show_pane_titles;
 } DisplayOptions;
 
 struct Session {
@@ -1492,7 +1493,8 @@ static void pane_free(Pane *p) {
     free(p);
 }
 
-static Pane *pane_new(const char *cwd, int w, int h, const char *title) {
+static Pane *pane_new(const char *cwd, int w, int h, const char *title,
+                      const char *session_name) {
     struct winsize iws;
     memset(&iws, 0, sizeof iws);
     iws.ws_col = tty_dimension(w > 0 ? w : 80);
@@ -1542,6 +1544,7 @@ static Pane *pane_new(const char *cwd, int w, int h, const char *title) {
         signal(SIGINT, SIG_DFL);
         signal(SIGTERM, SIG_DFL);
         setenv("TERM", "screen-256color", 1);
+        if (session_name && *session_name) setenv("MURX", session_name, 1);
         if (cwd && *cwd) chdir(cwd);
         const char *base = strrchr(shell, '/');
         base = base ? base + 1 : shell;
@@ -1600,7 +1603,7 @@ static int layout_pane_count(Layout *l) {
     return count_add(layout_pane_count(l->a), layout_pane_count(l->b));
 }
 
-static void layout_apply(Layout *l, int x, int y, int w, int h) {
+static void layout_apply(Layout *l, int x, int y, int w, int h, int show_titles) {
     if (!l) return;
     if (w < 1) w = 1;
     if (h < 1) h = 1;
@@ -1611,9 +1614,17 @@ static void layout_apply(Layout *l, int x, int y, int w, int h) {
 
     if (l->type == L_LEAF) {
         Pane *p = l->pane;
-        p->x = x;
-        p->y = y;
-        pane_resize(p, w, h);
+        if (show_titles) {
+            int ph = h - 1;
+            if (ph < 1) ph = 1;
+            p->x = x;
+            p->y = y + 1;
+            pane_resize(p, w, ph);
+        } else {
+            p->x = x;
+            p->y = y;
+            pane_resize(p, w, h);
+        }
         return;
     }
 
@@ -1626,18 +1637,28 @@ static void layout_apply(Layout *l, int x, int y, int w, int h) {
         if (aw < 1) aw = 1;
         if (avail - aw < 1) aw = avail;
         l->ratio = (double)aw / (double)avail;
-        layout_apply(l->a, x, y, aw, h);
-        layout_apply(l->b, x + aw + 1, y, avail - aw, h);
+        layout_apply(l->a, x, y, aw, h, show_titles);
+        layout_apply(l->b, x + aw + 1, y, avail - aw, h, show_titles);
     } else {
-        int avail = h - 1;
-        if (avail < 1) avail = 1;
-        int ah = (int)(avail * l->ratio + 0.5);
-        if (ah < 1) ah = 1;
-        if (ah > avail - 1) ah = avail - 1;
-        if (ah < 1) ah = 1;
-        l->ratio = (double)ah / (double)avail;
-        layout_apply(l->a, x, y, w, ah);
-        layout_apply(l->b, x, y + ah + 1, w, avail - ah);
+        if (show_titles) {
+            int ah = (int)(h * l->ratio + 0.5);
+            if (ah < 2) ah = 2;
+            if (ah > h - 2) ah = h - 2;
+            if (ah < 1) ah = 1;
+            l->ratio = (double)ah / (double)h;
+            layout_apply(l->a, x, y, w, ah, show_titles);
+            layout_apply(l->b, x, y + ah, w, h - ah, show_titles);
+        } else {
+            int avail = h - 1;
+            if (avail < 1) avail = 1;
+            int ah = (int)(avail * l->ratio + 0.5);
+            if (ah < 1) ah = 1;
+            if (ah > avail - 1) ah = avail - 1;
+            if (ah < 1) ah = 1;
+            l->ratio = (double)ah / (double)avail;
+            layout_apply(l->a, x, y, w, ah, show_titles);
+            layout_apply(l->b, x, y + ah + 1, w, avail - ah, show_titles);
+        }
     }
 }
 
@@ -1716,7 +1737,7 @@ static Window *window_new(Session *s, const char *name) {
     int pw = s->w > 0 ? s->w : 80;
     int ph = s->h > 1 ? s->h - 1 : 23;
     if (ph < 1) ph = 1;
-    Pane *p = pane_new(s->cwd, pw, ph, host);
+    Pane *p = pane_new(s->cwd, pw, ph, host, s->name);
     if (!p) {
         free(w);
         return NULL;
@@ -1737,11 +1758,12 @@ static Window *window_new(Session *s, const char *name) {
 }
 
 static void session_layout(Session *s) {
-    if (!s->cur || !s->cur->root) return;
     int top = s->status_bottom ? 0 : 1;
     int h = s->h - 1;
     if (h < 1) h = 1;
-    layout_apply(s->cur->root, 0, top, s->w, h);
+    for (Window *w = s->windows; w; w = w->next) {
+        if (w->root) layout_apply(w->root, 0, top, s->w, h, s->display.show_pane_titles);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1857,9 +1879,22 @@ static void border_mark(uint8_t *m, int w, int h, int x, int y, uint8_t bits) {
     m[y * w + x] |= bits;
 }
 
-static void border_collect(uint8_t *m, int w, int h, Layout *l) {
+static void border_collect(uint8_t *m, int w, int h, Layout *l, int show_titles) {
     if (!l || l->w < 1 || l->h < 1) return;
-    if (l->type == L_LEAF) return;
+    if (l->type == L_LEAF) {
+        if (show_titles) {
+            int y = l->y;
+            int end = l->x + l->w;
+            if (y < 0 || y >= h) return;
+            for (int x = l->x; x < end; x++) {
+                uint8_t bits = 0;
+                if (x > l->x || l->w == 1) bits |= B_LEFT;
+                if (x < end - 1 || l->w == 1) bits |= B_RIGHT;
+                border_mark(m, w, h, x, y, bits);
+            }
+        }
+        return;
+    }
     if (l->type == L_COLS) {
         int ax = l->x + l->a->w;
         int end = l->y + l->h;
@@ -1870,7 +1905,7 @@ static void border_collect(uint8_t *m, int w, int h, Layout *l) {
             border_mark(m, w, h, ax, y, bits);
         }
     }
-    else {
+    else if (!show_titles) {
         int ay = l->y + l->a->h;
         int end = l->x + l->w;
         for (int x = l->x; x < end; x++) {
@@ -1880,8 +1915,8 @@ static void border_collect(uint8_t *m, int w, int h, Layout *l) {
             border_mark(m, w, h, x, ay, bits);
         }
     }
-    border_collect(m, w, h, l->a);
-    border_collect(m, w, h, l->b);
+    border_collect(m, w, h, l->a, show_titles);
+    border_collect(m, w, h, l->b, show_titles);
 }
 
 /* Fill in the missing half of a T-junction: a line that ends next to a
@@ -1941,6 +1976,46 @@ static void border_render(Grid *g, const uint8_t *m) {
             if (ch) scr_put(g, x, y, ch, C_BORDER, DEFAULT_COLOR, 0);
         }
     }
+}
+
+static void draw_window_label(Grid *g, Window *win, Pane *p) {
+    int active = (p == win->active);
+    int fg1 = active ? C_WHITE : C_GREY;
+    int fg2 = active ? C_YELLOW : 3;
+    int fg3 = active ? C_BWHITE : C_BLUE;
+    int x = p->x;
+    int y = p->y - 1;
+    int end = p->x + p->w;
+    if (y < 0 || y >= g->h) return;
+    if (x < end) scr_put(g, x++, y, '[', fg1, DEFAULT_COLOR, 0);
+    char num[32];
+    snprintf(num, sizeof num, "%d", p->id);
+    x = draw_text(g, x, y, num, fg1, DEFAULT_COLOR, 0);
+    if (x < end) scr_put(g, x++, y, ':', fg2, DEFAULT_COLOR, 0);
+    if (x < end) scr_put(g, x++, y, ' ', fg2, DEFAULT_COLOR, 0);
+    const char *title = p->title[0] ? p->title : win->name;
+    const unsigned char *s = (const unsigned char *)title;
+    while (*s && x < end - 1) {
+        uint32_t cp;
+        int used = utf8_decode(s, (int)strlen((const char *)s), &cp);
+        int w = cp_width(cp);
+        if (w < 1) w = 1;
+        if (x + w > end - 1) break;
+        scr_put_wide(g, x, y, cp, fg3, DEFAULT_COLOR, 0);
+        x += w;
+        s += used;
+    }
+    if (x < end) scr_put(g, x, y, ']', fg1, DEFAULT_COLOR, 0);
+}
+
+static void draw_labels(Grid *g, Layout *l, Window *win) {
+    if (!l || l->w < 1 || l->h < 1) return;
+    if (l->type == L_LEAF) {
+        draw_window_label(g, win, l->pane);
+        return;
+    }
+    draw_labels(g, l->a, win);
+    draw_labels(g, l->b, win);
 }
 
 static void draw_layout(Grid *g, Layout *l) {
@@ -2232,6 +2307,7 @@ enum {
     SET_SHOW_CLOCK,
     SET_SHOW_MURX,
     SET_SHOW_HOSTNAME,
+    SET_SHOW_PANE_TITLES,
     SET_PREFIX
 };
 
@@ -2306,6 +2382,7 @@ static const MenuItem menu_config_items[] = {
     { "Show clock",            MI_TOGGLE, SET_SHOW_CLOCK, 1, 0 },
     { "Show [murx] label",     MI_TOGGLE, SET_SHOW_MURX, 1, 0 },
     { "Show hostname",         MI_TOGGLE, SET_SHOW_HOSTNAME, 1, 0 },
+    { "Show pane titles",      MI_TOGGLE, SET_SHOW_PANE_TITLES, 1, 0 },
     MENU_SEP,
     { "Reset display/status defaults", MI_ACTION, ACT_RESET_DISPLAY, 0, 0 }
 };
@@ -2401,6 +2478,7 @@ static int menu_setting_on(Session *s, Client *c, const MenuItem *it) {
     case SET_SHOW_CLOCK:    return s->display.show_clock == it->arg;
     case SET_SHOW_MURX:     return s->display.show_murx == it->arg;
     case SET_SHOW_HOSTNAME: return s->display.show_hostname == it->arg;
+    case SET_SHOW_PANE_TITLES: return s->display.show_pane_titles == it->arg;
     case SET_PREFIX:        return c->prefix == it->arg;
     default: return 0;
     }
@@ -2515,10 +2593,12 @@ static void compose(Session *s, Client *c, Grid *out) {
     grid_clear(out, DEFAULT_COLOR);
     if (s->cur && s->cur->root) {
         uint8_t *mask = xcalloc((size_t)out->w, (size_t)out->h);
-        border_collect(mask, s->w, s->h, s->cur->root);
+        border_collect(mask, s->w, s->h, s->cur->root, s->display.show_pane_titles);
         border_join(mask, s->w, s->h);
         draw_layout(out, s->cur->root);
         border_render(out, mask);
+        if (s->display.show_pane_titles)
+            draw_labels(out, s->cur->root, s->cur);
         free(mask);
     }
     Scrollback *view = scrollback_current(c, s);
@@ -2939,7 +3019,7 @@ static void switch_last_window(Session *s) {
 static Pane *host_pane_new(Session *s, int w, int h) {
     char host[128];
     short_hostname(host, sizeof host);
-    return pane_new(s->cwd, w, h, host);
+    return pane_new(s->cwd, w, h, host, s->name);
 }
 
 static void split_pane(Session *s, int type) {
@@ -3395,6 +3475,11 @@ static void menu_apply_setting(Client *c, Session *s, const MenuItem *it) {
     case SET_SHOW_CLOCK:    s->display.show_clock = it->arg ? 1 : 0; break;
     case SET_SHOW_MURX:     s->display.show_murx = it->arg ? 1 : 0; break;
     case SET_SHOW_HOSTNAME: s->display.show_hostname = it->arg ? 1 : 0; break;
+    case SET_SHOW_PANE_TITLES:
+        s->display.show_pane_titles = it->arg ? 1 : 0;
+        session_layout(s);
+        s->redraw = 1;
+        break;
     case SET_PREFIX:        c->prefix = (unsigned char)it->arg; break;
     default: return;
     }
@@ -3435,6 +3520,7 @@ static void menu_action(Client *c, Session *s, int action) {
     case ACT_KILL_SERVER: start_confirm(c, 2, "kill-server? (y/n) "); break;
     case ACT_RESET_DISPLAY:
         memset(&s->display, 0, sizeof s->display);
+        s->display.show_pane_titles = 1;
         s->status_bottom = 0;
         s->status_bg = 0;
         session_layout(s);
@@ -4804,92 +4890,76 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
     return 0;
 }
 
+/* Two-column help rows: the left field is padded so descriptions line up. */
+static void help_row(FILE *out, const char *left, const char *right) {
+    fprintf(out, "  %-24s  %s\n", left, right);
+}
+
 static void print_help(FILE *out) {
-    fprintf(out,
-        "usage: murx [-p letter] [-s top|bottom] [-c RRGGBB] [--cwd] [--clock] [--murx] [--hostname] [--] [session]\n"
-        "       murx -l | --list-sessions\n"
-        "       murx -h | --help\n"
-        "\n"
-        "Attach to a running session, or start it if it is not running.\n"
-        "The session name defaults to \"0\".\n"
-        "\n"
-        "Use -l or --list-sessions to list running sessions without attaching.\n"
-        "\n"
-        "Use -s top|bottom (or --status top|bottom) to position the status line.\n"
-        "New sessions default to top; an explicit choice updates all attached clients.\n"
-        "Without -s, keep the session position.\n"
-        "Use -c RRGGBB (or --color RRGGBB) to set the session's status bar background.\n"
-        "Specify six hexadecimal digits, such as 000000 for black.\n"
-        "New sessions use the terminal default. Without -c, keep the session color.\n"
-        "Use --cwd to show the current directory in the status bar.\n"
-        "Use --clock to show the clock in the status bar.\n"
-        "Use --murx to show [murx] in the status bar when --cwd is not enabled.\n"
-        "Use --hostname to show the hostname: prefix in window titles.\n"
-        "These four features default to off and set a new session's values;\n"
-         "the Configuration menu can change them in a running session.\n"
-        "\n"
-        "Use -p x (or --prefix x) to choose Ctrl-X as this client's prefix.\n"
-        "Letters a through z are supported (case-insensitive); the default is a (Ctrl-A).\n"
-        "The shortcuts below use the default Ctrl-A prefix. Replace it with\n"
-        "your chosen prefix, including both keys in the last-window shortcut.\n"
-        "Prefix then a sends the chosen prefix literally to the pane.\n"
-        "\n"
-        "Menu\n"
-        "  Ctrl-A m              open the main menu\n"
-        "\n"
-        "Windows\n"
-        "  Ctrl-A c              new window\n"
-        "  Ctrl-A Ctrl-C         new window\n"
-        "  Ctrl-A n              next window\n"
-        "  Ctrl-A Space          next window\n"
-        "  Ctrl-A Ctrl-N         next window\n"
-        "  Ctrl-A Ctrl-@         next window\n"
-        "  Ctrl-A p              previous window\n"
-        "  Ctrl-A Backspace      previous window\n"
-        "  Ctrl-A Ctrl-P         previous window\n"
-        "  Ctrl-A Ctrl-A         last window\n"
-        "  Ctrl-A w              window menu\n"
-        "  Ctrl-A Ctrl-W         window menu\n"
-        "  Ctrl-A \"              window menu\n"
-        "  Ctrl-A A              rename window\n"
-        "  Ctrl-A 0 .. Ctrl-A 9  select window by number\n"
-        "  Ctrl-A &              kill window (confirm)\n"
-        "\n"
-        "Panes\n"
-        "  Ctrl-A |              split left/right\n"
-        "  Ctrl-A %%              split left/right\n"
-        "  Ctrl-A -              split top/bottom\n"
-        "  Ctrl-A h              select pane left\n"
-        "  Ctrl-A j              select pane down\n"
-        "  Ctrl-A k              select pane up\n"
-        "  Ctrl-A l              select pane right\n"
-        "  Ctrl-A arrow keys     select pane\n"
-        "  Ctrl-A Tab            next pane\n"
-        "  Ctrl-A Shift-Tab      previous pane\n"
-        "  Ctrl-A o              next pane\n"
-        "  Ctrl-A Ctrl-H         resize pane left\n"
-        "  Ctrl-A Ctrl-J         resize pane down\n"
-        "  Ctrl-A Ctrl-K         resize pane up\n"
-        "  Ctrl-A Ctrl-L         resize pane right\n"
-        "  Ctrl-A K              kill pane (confirm)\n"
-        "  Ctrl-A PageUp, [      scrollback (PgUp/PgDn; q/Escape exits)\n"
-        "                        window creation and switching shortcuts work in scrollback\n"
-        "\n"
-        "Client and server\n"
-        "  Ctrl-A a              send a literal Ctrl-A to the pane\n"
-        "  Ctrl-A x              lock the client\n"
-        "  Ctrl-A Ctrl-X         lock the client\n"
-        "  Ctrl-A *              list attached clients\n"
-        "  Ctrl-A r              show \"Configuration Reloaded!\"\n"
-        "  Ctrl-A R              resize session to this terminal (force)\n"
-        "  Ctrl-A d              detach\n"
-        "  Ctrl-A Ctrl-D         detach\n"
-        "  Ctrl-A \\              kill server (confirm)\n"
-        "\n"
-        "Inside menus use Up/Down or j/k, Left/Right or h/l for submenus,\n"
-        "Enter to select and q or Escape to close. The Configuration menu holds\n"
-        "status line, prefix and display settings.\n"
-        "Inside prompts use Enter to accept, Escape to cancel, Ctrl-U to clear.\n");
+    fputs("usage: murx [OPTIONS] [session]\n"
+          "\n"
+          "Attach to a running session, starting a server if needed. The session\n"
+          "name defaults to \"0\". Detach with the prefix followed by d.\n"
+          "\n"
+          "Options:\n", out);
+
+    help_row(out, "-h, --help", "show this help and exit");
+    help_row(out, "-l, --list-sessions", "list running sessions without attaching");
+    help_row(out, "-p, --prefix LETTER", "client prefix Ctrl-LETTER (a-z, default: a)");
+    help_row(out, "-s, --status POSITION", "status line: top or bottom (new sessions: top)");
+    help_row(out, "-c, --color RRGGBB", "status bar background, six hex digits (e.g. 000000)");
+    help_row(out, "--cwd", "show current directory in status bar");
+    help_row(out, "--clock", "show clock in status bar");
+    help_row(out, "--murx", "show [murx] in status bar unless --cwd is set");
+    help_row(out, "--hostname", "show hostname: prefix in window titles");
+    help_row(out, "--hide-pane-titles", "hide the title row above each pane");
+
+    fputs("\n"
+          "Without -s or -c, an existing session keeps its position and color.\n"
+          "Display options set new session values and can be changed later from\n"
+          "the Configuration menu. Pane titles are shown by default.\n"
+          "\n"
+          "Shortcuts (press the prefix, release it, then press the key shown;\n"
+          "Ctrl-A is the default prefix):\n"
+          "\n", out);
+
+    fputs("Menu\n", out);
+    help_row(out, "m", "open the main menu");
+
+    fputs("\nWindows\n", out);
+    help_row(out, "c, Ctrl-C", "new window");
+    help_row(out, "n, Space, Ctrl-N, Ctrl-@", "next window");
+    help_row(out, "p, Ctrl-P, Backspace", "previous window");
+    help_row(out, "Ctrl-A", "last window (press prefix twice)");
+    help_row(out, "w, Ctrl-W, \"", "window menu");
+    help_row(out, "A", "rename window");
+    help_row(out, "0 .. 9", "select window by number");
+    help_row(out, "&", "kill window (confirm)");
+
+    fputs("\nPanes\n", out);
+    help_row(out, "|, %", "split left/right");
+    help_row(out, "-", "split top/bottom");
+    help_row(out, "h, j, k, l", "select pane left/down/up/right");
+    help_row(out, "Up, Down, Left, Right", "select pane");
+    help_row(out, "Tab, Shift-Tab, o", "next/previous pane");
+    help_row(out, "Ctrl-H, Ctrl-J", "resize pane left/down");
+    help_row(out, "Ctrl-K, Ctrl-L", "resize pane up/right");
+    help_row(out, "K", "kill pane (confirm)");
+    help_row(out, "PageUp, [", "scrollback (PgUp/PgDn; q/Esc exits)");
+
+    fputs("\nClient and session\n", out);
+    help_row(out, "a", "send prefix literally to the pane");
+    help_row(out, "x, Ctrl-X", "lock the client");
+    help_row(out, "*", "list attached clients");
+    help_row(out, "r", "show \"Configuration Reloaded!\"");
+    help_row(out, "R", "resize session to this terminal");
+    help_row(out, "d, Ctrl-D", "detach");
+    help_row(out, "\\", "kill server (confirm)");
+
+    fputs("\nMenus: Up/Down or j/k move, Left/Right or h/l enter/leave submenus,\n"
+          "Enter selects, q/Escape/Ctrl-C closes. Prompts: Enter accepts,\n"
+          "Escape/Ctrl-C cancels, Ctrl-U clears. Window shortcuts work in scrollback.\n"
+          "See murx(1) for the full manual.\n", out);
 }
 
 static int parse_prefix(const char *text, unsigned char *prefix) {
@@ -4908,7 +4978,7 @@ int main(int argc, char **argv) {
     unsigned char prefix = DEFAULT_PREFIX;
     int status = 0;
     uint32_t color = 0;
-    DisplayOptions display = {0, 0, 0, 0};
+    DisplayOptions display = {0, 0, 0, 0, 1};
     int list = 0;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1]) {
         const char *option = argv[argi++];
@@ -4927,6 +4997,8 @@ int main(int argc, char **argv) {
             display.show_murx = 1;
         } else if (strcmp(option, "--hostname") == 0) {
             display.show_hostname = 1;
+        } else if (strcmp(option, "--hide-pane-titles") == 0) {
+            display.show_pane_titles = 0;
         } else if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
             if (argi >= argc || !parse_prefix(argv[argi], &prefix)) {
                 fprintf(stderr, "murx: %s requires a letter from a through z\n", option);
@@ -4971,6 +5043,15 @@ int main(int argc, char **argv) {
         fprintf(stderr, "murx: bad session name '%s'\n", name);
         fprintf(stderr, "Try 'murx --help' for more information.\n");
         return 2;
+    }
+
+    const char *in_murx = getenv("MURX");
+    if (in_murx && *in_murx) {
+        fprintf(stderr,
+                "murx: already running inside murx session '%s'\n"
+                "  Refusing to nest. Unset MURX to override: env -u MURX murx\n",
+                in_murx);
+        return 1;
     }
 
     char path[PATH_MAX];
