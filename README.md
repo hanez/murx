@@ -17,7 +17,7 @@ make
 ./murx -c 191a1c work           # use a grey status bar background
 ./murx --clock work             # show the status bar clock
 ./murx --hostname work          # show the hostname: prefix in window titles
-./murx -l, --list-sessions      # list running sessions without attaching
+./murx -l                       # list running sessions (or --list-sessions)
 ./murx --help                   # all shortcuts
 ```
 
@@ -25,10 +25,11 @@ Detach with `Ctrl-A d`. Run `murx` again to reattach.
 
 Use `murx -l` or `murx --list-sessions` to list running sessions, sorted by
 name, one per line. Listing works without a terminal and does not create or
-attach to a session. It checks the current user's runtime socket directory
-and `/tmp` fallback, skips stale sockets, and prints nothing when no sessions
-are running. Do not pass a session name with this option. Use `murx name`
-to attach to a listed session.
+attach to a session. It checks the current user's preferred socket directory
+(`$XDG_RUNTIME_DIR/murx-<uid>/`, `$TMPDIR/murx-<uid>/`, or `/tmp/murx-<uid>/`)
+and the `/tmp` fallback, skips stale sockets, and prints nothing when no
+sessions are running. Do not pass a session name with this option. Use
+`murx name` to attach to a listed session.
 
 The [murx(1) manual](murx.1) covers all options, shortcuts, session behavior,
 and remote shell setup. Read it locally with `man ./murx.1`. Run
@@ -83,7 +84,8 @@ and `murx-root`.
 ## What it does
 
 - One persistent server per session (a Unix socket in
-  `$XDG_RUNTIME_DIR/murx-<uid>/` or `$TMPDIR/murx-<uid>/`).
+  `$XDG_RUNTIME_DIR/murx-<uid>/`, `$TMPDIR/murx-<uid>/`, or `/tmp/murx-<uid>/`,
+  with a `/tmp` fallback for long paths).
 - Windows, panes, splits, resizing, renaming and a status line.
 - Real ptys per pane, a built-in VT100/xterm-ish screen emulator (colors,
   256-color and truecolor SGR, alternate screen, scrolling, UTF-8, wide
@@ -405,6 +407,7 @@ This is "very basic" by design:
 - Mouse reporting is not negotiated with the outer terminal.
 - Killing the server affects only the current session, since each named
   session has its own small server process.
+- At most 60 panes may be created in a window.
 - Key repeat is not implemented: one resize step per key press.
 - New windows start in the directory murx was started from, not in the
   current pane's directory.
@@ -429,8 +432,9 @@ The root directory includes [APKBUILD](APKBUILD) for Alpine Linux and
 [PKGBUILD](PKGBUILD) for Arch Linux. Both build the local source files rather
 than downloading a release. Version `0.20261116` identifies an unreleased
 snapshot; update the version and release fields when packaging a newer snapshot.
-Both recipes build with the default C compiler, so plain `make` works there too.
-The packages install under `/usr`, including the manual, README and license.
+Both recipes build with the default C compiler and pass distro `CFLAGS` to
+`make`. The packages install under `/usr`, including the manual, README,
+AUTHORS and license.
 
 On Alpine, install `alpine-sdk`, configure your abuild signing key with
 `abuild-keygen -a -i`, and run as a regular user with abuild configured:

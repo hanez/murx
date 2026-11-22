@@ -275,7 +275,7 @@ does not start with screen, tmux, linux, or dumb; otherwise RGB is mapped to
 the nearest xterm-256 entry.
 .SH SESSION SIZE
 The most recently attached or resized client determines the session size,
-with a minimum of 20 columns and 5 rows.
+clamped to a minimum of 20 columns by 5 rows and a maximum of 1,000 by 1,000.
 Larger clients center the session; smaller clients show its top-left portion.
 Ctrl-A R forces the session to the current client's terminal size.
 Ctrl-A * lists attached clients for size diagnostics.
