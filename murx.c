@@ -58,10 +58,11 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
-/* openpty(3) lives in <pty.h> on Linux and glibc, in <util.h> on the BSDs
-   and macOS. */
-#if defined(__FreeBSD__) || defined(__DragonFly__) || defined(__NetBSD__) || \
-    defined(__OpenBSD__) || defined(__APPLE__)
+/* openpty(3) lives in <pty.h> on Linux and glibc, in <libutil.h> on FreeBSD
+   and DragonFly, and in <util.h> on the other BSDs and macOS. */
+#if defined(__FreeBSD__) || defined(__DragonFly__)
+#include <libutil.h>
+#elif defined(__NetBSD__) || defined(__OpenBSD__) || defined(__APPLE__)
 #include <util.h>
 #else
 #include <pty.h>
