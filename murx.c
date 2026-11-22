@@ -1979,14 +1979,18 @@ static void border_render(Grid *g, const uint8_t *m) {
     }
 }
 
-static void draw_window_label(Grid *g, Window *win, Pane *p) {
+/* A title row belongs to the layout leaf, not to the pane's content grid.
+ * Use the leaf geometry so the label stays on the row reserved by
+ * layout_apply(), even if a pane's content coordinates are stale. */
+static void draw_window_label(Grid *g, Window *win, Layout *l) {
+    Pane *p = l->pane;
     int active = (p == win->active);
     int fg1 = active ? C_WHITE : C_GREY;
     int fg2 = active ? C_YELLOW : 3;
     int fg3 = active ? C_BWHITE : C_BLUE;
-    int x = p->x;
-    int y = p->y - 1;
-    int end = p->x + p->w;
+    int x = l->x;
+    int y = l->y;
+    int end = l->x + l->w;
     if (y < 0 || y >= g->h) return;
     if (x < end) scr_put(g, x++, y, '[', fg1, DEFAULT_COLOR, 0);
     char num[32];
@@ -2012,7 +2016,7 @@ static void draw_window_label(Grid *g, Window *win, Pane *p) {
 static void draw_labels(Grid *g, Layout *l, Window *win) {
     if (!l || l->w < 1 || l->h < 1) return;
     if (l->type == L_LEAF) {
-        draw_window_label(g, win, l->pane);
+        draw_window_label(g, win, l);
         return;
     }
     draw_labels(g, l->a, win);
