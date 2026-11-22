@@ -4688,7 +4688,7 @@ static int tty_raw(struct termios *saved) {
 }
 
 static void tty_restore(struct termios *saved) {
-    const char *seq = "\x1b[?1l\x1b[0m\x1b[?25h\x1b[?1049l";
+    const char *seq = "\x1b[?1l\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l";
     write_all(STDOUT_FILENO, seq, strlen(seq));
     tcsetattr(STDIN_FILENO, TCSAFLUSH, saved);
 }
@@ -4760,7 +4760,7 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
     signal(SIGPIPE, SIG_IGN);
 
     {
-        const char *seq = "\x1b[?1049h\x1b[?1l\x1b[?25l\x1b[2J\x1b[H";
+        const char *seq = "\x1b[?1049h\x1b[?7l\x1b[?1l\x1b[?25l\x1b[2J\x1b[H";
         write_all(STDOUT_FILENO, seq, strlen(seq));
     }
 
