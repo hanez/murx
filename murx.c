@@ -4806,7 +4806,7 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
 
 static void print_help(FILE *out) {
     fprintf(out,
-        "usage: murx [-p letter] [-s top|bottom] [-c RRGGBB] [--cwd] [--clock] [--murx] [--hostname] [session]\n"
+        "usage: murx [-p letter] [-s top|bottom] [-c RRGGBB] [--cwd] [--clock] [--murx] [--hostname] [--] [session]\n"
         "       murx -l | --list-sessions\n"
         "       murx -h | --help\n"
         "\n"
