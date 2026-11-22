@@ -3608,6 +3608,9 @@ static void prefix_command(Client *c, Session *s, int key) {
     case K_BTAB:
         cycle_pane(s, -1);
         break;
+    case 'o':
+        cycle_pane(s, 1);
+        break;
     case '"':
         start_menu(c, s);
         break;
