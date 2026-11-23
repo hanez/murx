@@ -1,3 +1,11 @@
+# murx 1.0.3 released
+
+**November 23, 2026**
+
+- Fixed the Configuration menu (`Ctrl-A m` → Configuration). Pressing Enter
+  now turns display settings on or off. Previously, an enabled setting could
+  not be turned off from its menu entry.
+
 # murx 1.0.2 released
 
 **November 23, 2026**

@@ -1,6 +1,6 @@
 # Local source snapshot; refresh version and checksums with `make pkgsums`.
 pkgname=murx
-pkgver=1.0.2
+pkgver=1.0.3
 pkgrel=0
 pkgdesc="Small persistent terminal multiplexer"
 url="https://codeberg.org/armin/murx"
@@ -26,7 +26,7 @@ package() {
 }
 
 sha512sums="
-bc093a0e3f748d16ecec21363cb3ab07ae4bd733ea8d0ddcd2a646bd5a1372bd419bab7ea9474aea63f6c4cc588b43ed635a0e016c1d468a8242a31d074462db  murx.c
+68c0e952a57d03e5c2cc6a7451cca1687341c20620634617529b6dc84f0fcdc7cb49cbc662bfad5b1fe3229c082a61480813ed5c01a1994c1b2a8e34bd421e29  murx.c
 ebce5c1268253d4dbf1cc1c7d6200c3bad97cba6361d8ff3c5d4563b670565a1a70d83d7bcb2dc0b1ca9fad9ca49d2ff8366b21ac73fb26cb7b46730d0acc425  Makefile
 219082e6277ee8c226cdd61a5b17d4e3c6893adf04b2f59ea84a6b6421dbd5a6d0ff38b93d8dd8ae41ed037e77252058dacadd5ff1f0c36c7c1ff95503e1e7a8  murx.1
 5b0da48df43e7c13ac8447dda8fb0f57bf4c5bacb630e39d9f2105a4ee4a0485b80fb0e3c4a7f88ac16411f5e4c88bdf81ac67ccf4805af3beb68cf7e1725f0d  README.md
