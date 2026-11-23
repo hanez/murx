@@ -386,7 +386,9 @@ typedef enum {
     PS_OSC_ESC,
     PS_CHARSET,
     PS_DCS,
-    PS_DCS_ESC
+    PS_DCS_ESC,
+    PS_STRING,
+    PS_STRING_ESC
 } ParseState;
 
 #define HISTORY_LINES 2000
@@ -1108,6 +1110,13 @@ static void em_byte(Pane *p, unsigned char b) {
             p->pstate = PS_DCS;
             p->seqlen = 0;
             break;
+        case 'k': case 'X': case '^': case '_':
+            /* Screen/tmux set the window title with ESC k <text> ESC \.
+               SOS/PM/APC use ESC X/^/_ with the same ST terminator. Consume
+               these strings so their payload is never painted into the grid. */
+            p->pstate = PS_STRING;
+            p->seqlen = 0;
+            break;
         case '(': case ')': case '*': case '+':
             p->pstate = PS_CHARSET;
             break;
@@ -1184,6 +1193,28 @@ static void em_byte(Pane *p, unsigned char b) {
 
     case PS_DCS_ESC:
         p->pstate = (b == '\\') ? PS_GROUND : PS_DCS;
+        break;
+
+    case PS_STRING:
+        /* Terminated by ST (ESC \) or, for compatibility, BEL. */
+        if (b == 0x1b) {
+            p->pstate = PS_STRING_ESC;
+        } else if (b == 0x07) {
+            p->pstate = PS_GROUND;
+            p->seqlen = 0;
+        } else if (p->seqlen < (int)sizeof p->seq - 1) {
+            p->seq[p->seqlen++] = (char)b;
+        }
+        break;
+
+    case PS_STRING_ESC:
+        if (b == '\\') {
+            p->pstate = PS_GROUND;
+        } else {
+            /* Not ST: the ESC belonged to the string payload. */
+            p->pstate = PS_STRING;
+        }
+        p->seqlen = 0;
         break;
     }
 }
@@ -4688,7 +4719,7 @@ static int tty_raw(struct termios *saved) {
 }
 
 static void tty_restore(struct termios *saved) {
-    const char *seq = "\x1b[?1l\x1b[?7h\x1b[0m\x1b[?25h\x1b[?1049l";
+    const char *seq = "\x1b[?1l\x1b[0m\x1b[?25h\x1b[?1049l";
     write_all(STDOUT_FILENO, seq, strlen(seq));
     tcsetattr(STDIN_FILENO, TCSAFLUSH, saved);
 }
@@ -4760,7 +4791,7 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
     signal(SIGPIPE, SIG_IGN);
 
     {
-        const char *seq = "\x1b[?1049h\x1b[?7l\x1b[?1l\x1b[?25l\x1b[2J\x1b[H";
+        const char *seq = "\x1b[?1049h\x1b[?1l\x1b[?25l\x1b[2J\x1b[H";
         write_all(STDOUT_FILENO, seq, strlen(seq));
     }
 
