@@ -149,6 +149,8 @@ static int send_msg(int fd, uint32_t type, const void *data, size_t len);
 #define SIZE_CHECK_MS 250
 #define NAME_CHECK_MS 1000
 #define MENU_MAX_DEPTH 8
+#define DEFAULT_HISTORY_LINES 2000
+#define MAX_HISTORY_LINES 100000
 
 /* ------------------------------------------------------------------ */
 /* small helpers                                                      */
@@ -392,9 +394,6 @@ typedef enum {
     PS_STRING,
     PS_STRING_ESC
 } ParseState;
-
-#define DEFAULT_HISTORY_LINES 2000
-#define MAX_HISTORY_LINES 100000
 
 typedef struct Pane Pane;
 
