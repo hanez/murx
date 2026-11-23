@@ -445,83 +445,17 @@ that otherwise collapses pane grids to 1x1.
 
 ## Packages
 
-The [Alpine recipe](alpine/APKBUILD) and [Arch recipe](arch/PKGBUILD)
-build from the local checkout using symlinks to the source files. The package
-version comes from `MURX_VERSION` in `murx.c`. Adjust the package release fields
-separately as needed. Both recipes
-build with the default C compiler and pass distro `CFLAGS` to `make`. The
-packages install under `/usr`, including the manual, README, AUTHORS and
-license.
+- [Alpine Linux](alpine/README.md)
+- [Arch Linux](arch/README.md)
+- [Debian](debian/README.md)
+- [Gentoo](gentoo/README.md)
+- [FreeBSD](freebsd/README.md)
+- [OpenBSD](openbsd/README.md)
 
-On Alpine, install `alpine-sdk`, configure your abuild signing key with
-`abuild-keygen -a -i`, and run as a regular user with abuild configured:
-
-```sh
-make pkgalpine
-```
-
-Install the resulting `murx` package and its `murx-doc` subpackage for the
-manual. abuild writes packages beneath its configured repository destination
-(normally `~/packages`); use `apk add /path/to/package.apk` for each signed
-package after trusting your local signing key.
-
-On Arch, install `base-devel` and run as a regular user:
-
-```sh
-make pkgsources
-cd arch
-makepkg -si
-```
-
-This builds the package and installs it through pacman. To build from the
-repository root, run `make pkgarch`. The recipe lists
-`x86_64` and `aarch64`; builds run on the current architecture.
-
-For Gentoo, copy the [`app-misc/murx` package directory](gentoo/app-misc/murx)
-into a configured local Portage overlay. The ebuild fetches the tagged release
-archive and includes a Manifest with its checksums. It is keyworded `~amd64`;
-accept that keyword for `app-misc/murx` if your system uses stable keywords.
-Then install it with:
-
-```sh
-emerge --ask app-misc/murx
-```
-
-For a new Gentoo release, copy the ebuild to the new versioned filename and
-run `ebuild murx-VERSION.ebuild manifest` after publishing the matching tag.
-
-After changing a packaged source file, run `make pkgsums` to sync both package
-versions and refresh both sets of checksums. This target requires `abuild`
-and `updpkgsums` (from `pacman-contrib`). Neither recipe
-requires a test suite; its check step runs `murx --help` as a smoke check.
-
-### Debian
-
-The [Debian packaging](debian/) builds from the local checkout. Install
-`build-essential` and `debhelper`, then run:
-
-```sh
-dpkg-buildpackage -b -us -uc
-```
-
-The resulting `murx_*.deb` is written to the parent directory. Install it
-with `apt install ../murx_1.0.3-1_$(dpkg --print-architecture).deb`.
-
-### FreeBSD
-
-Copy the [`sysutils/murx` port](freebsd/sysutils/murx/) into a FreeBSD Ports
-tree. From the port directory, run `make package` to fetch the tagged source,
-verify its checksum, and build a package. Install the resulting package with
-`pkg add`. To update the port for a new release, change `DISTVERSION` and run
-`make makesum` after publishing the matching tag.
-
-### OpenBSD
-
-Copy the [`sysutils/murx` port](openbsd/sysutils/murx/) into an OpenBSD ports
-tree. From the port directory, run `make package` to fetch and verify the
-tagged source and build a package. Run `make install` to install it through
-the ports tree. For a new release, update `DISTNAME` and run `make makesum`
-after publishing the matching tag.
+The Alpine and Arch recipes build from the local checkout. After changing
+packaged source files, run `make pkgsums` to sync their versions with
+`MURX_VERSION` in `murx.c` and refresh their checksums. This target requires
+`abuild` and `updpkgsums` (from `pacman-contrib`).
 
 ## Authors
 

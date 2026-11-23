@@ -6,8 +6,10 @@ src/
 # Packages
 /alpine/*
 !/alpine/APKBUILD
+!/alpine/README.md
 /arch/*
 !/arch/PKGBUILD
+!/arch/README.md
 *.apk
 *.xz
 

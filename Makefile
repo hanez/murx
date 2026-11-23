@@ -33,11 +33,14 @@ pkgclean:
 
 pkgsources:
 	@for dir in alpine arch; do \
-	    for source in murx.c Makefile murx.1 README.md LICENSE AUTHORS; do \
+	    for source in murx.c Makefile murx.1 LICENSE AUTHORS; do \
 	        if [ ! -e "$$dir/$$source" ] && [ ! -L "$$dir/$$source" ]; then \
 	            ln -s "../$$source" "$$dir/$$source" || exit 1; \
 	        fi; \
 	    done; \
+	    if [ ! -e "$$dir/MURX-README.md" ] && [ ! -L "$$dir/MURX-README.md" ]; then \
+	        ln -s ../README.md "$$dir/MURX-README.md" || exit 1; \
+	    fi; \
 	done
 
 pkgalpine: pkgclean pkgsources
