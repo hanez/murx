@@ -8,7 +8,7 @@ url='https://codeberg.org/armin/murx'
 license=('Apache-2.0')
 depends=('glibc')
 source=('murx.c' 'Makefile' 'murx.1' 'MURX-README.md' 'LICENSE' 'AUTHORS')
-sha256sums=('68b2e3aa8cf2de7a69aeee008242983f5ca01839e54127547b2f6860ff249dd5'
+sha256sums=('da9a5d8451c396f45d5c1839ca762d066fa531b42339db81d1e478b9ad6559f0'
             '78a9c19c212e8038422e1bb4bb96d9b25eb19ad1359489cd32edf9e1a76638b2'
             'b0965c6c8cd73cef1e578e4a8295df0899b43f20ab9a9649150790a3b1434c1b'
             '7cb95cc829fd2f9756cbb611aa4ddb8dc97853ccf360efd18d1423628e484aa1'
