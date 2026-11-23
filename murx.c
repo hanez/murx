@@ -4962,6 +4962,22 @@ static void help_row(FILE *out, const char *left, const char *right) {
 }
 
 static void print_help(FILE *out) {
+    fputs("       +-------------------------+\n"
+          "       | o o o                   |\n"
+          "       +-------------+-----------+\n"
+          "       | >_          | ========  |\n"
+          "       |             | ====      |\n"
+          "       |             +-----------+\n"
+          "       |             |  :|:||:   |\n"
+          "       +-------------+-----------+\n"
+          "\n"
+          "  ########  ##   ##  ######  ##   ##\n"
+          "  ## ## ##  ##   ##  ##       ## ##\n"
+          "  ## ## ##  ##   ##  ##        ###\n"
+          "  ## ## ##  ##   ##  ##       ## ##\n"
+          "  ## ## ##   #####   ##      ##   ##\n"
+          "      -- terminal multiplexer --\n"
+          "\n", out);
     fprintf(out, "murx %s\n\n", MURX_VERSION);
     fputs("usage: murx [OPTIONS] [session]\n"
           "\n"

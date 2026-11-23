@@ -22,7 +22,7 @@ make
 ./murx --hostname work          # show the hostname: prefix in window titles
 ./murx --pane-titles work       # show a title row above each pane
 ./murx -l, --list-sessions      # list running sessions without attaching
-./murx --help                   # version, usage and all shortcuts
+./murx --help                   # logo, version, usage and shortcuts
 ./murx -v, --version            # print the version and exit
 ```
 
