@@ -4994,7 +4994,7 @@ static void print_help(FILE *out) {
     help_row(out, "--clock", "show clock in status bar");
     help_row(out, "--murx", "show [murx] in status bar unless --cwd is set");
     help_row(out, "--hostname", "show hostname: prefix in window titles");
-    help_row(out, "--pane-titles", "show the title row above each pane (default: off)");
+    help_row(out, "--titles", "show the title row above each pane (default: off)");
 
     fputs("\n"
           "Without -s or -c, an existing session keeps its position and color.\n"
@@ -5095,7 +5095,7 @@ int main(int argc, char **argv) {
             display.show_murx = 1;
         } else if (strcmp(option, "--hostname") == 0) {
             display.show_hostname = 1;
-        } else if (strcmp(option, "--pane-titles") == 0) {
+        } else if (strcmp(option, "--titles") == 0) {
             display.show_pane_titles = 1;
         } else if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
             if (argi >= argc || !parse_prefix(argv[argi], &prefix)) {

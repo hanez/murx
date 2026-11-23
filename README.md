@@ -20,7 +20,7 @@ make
 ./murx --history 10000 work     # keep up to 10,000 history lines per pane
 ./murx --clock work             # show the status bar clock
 ./murx --hostname work          # show the hostname: prefix in window titles
-./murx --pane-titles work       # show a title row above each pane
+./murx --titles work            # show a title row above each pane
 ./murx -l, --list-sessions      # list running sessions without attaching
 ./murx --help                   # logo, version, usage and shortcuts
 ./murx -v, --version            # print the version and exit
@@ -71,7 +71,7 @@ and `--clock` to show the clock on the right. Use `--murx` to show `[murx]`
 on the left when `--cwd` is not enabled; the directory takes precedence if
 both are supplied. Use `--hostname` to show the `hostname:` prefix in window
 names and the outer terminal title. These display options are disabled by
-default. Use `--pane-titles` to show the title row above each pane. These
+default. Use `--titles` to show the title row above each pane. These
 options set the initial values for a new session. The `Configuration...` menu
 can change them in a running session (see [Menu](#menu)). To restore the
 previous default display, use
@@ -388,7 +388,7 @@ Hard-coded:
   A root shell that does not run the hooks cannot report its privilege change.
 - Pane borders are thin box-drawing lines (`─`, `│`, `┬`, `┼`, ...) in
   `colour8`, drawn on the terminal's default background. Enable title rows
-  with `--pane-titles` or the Configuration menu. Each title row shows
+  with `--titles` or the Configuration menu. Each title row shows
   `[N: title]`. On the active pane, brackets and numbers use `colour7`, the
   separator uses `colour11`, and the title uses `colour15`. Inactive panes
   use `colour8`, `colour3`, and `colour12`.

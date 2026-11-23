@@ -11,7 +11,7 @@ murx \- small persistent terminal multiplexer
 .RB [ \-\-clock ]
 .RB [ \-\-murx ]
 .RB [ \-\-hostname ]
-.RB [ \-\-pane-titles ]
+.RB [ \-\-titles ]
 .RB [ \-\- ]
 .RI [ session ]
 .br
@@ -92,7 +92,7 @@ is not enabled. The directory takes precedence if both options are supplied.
 .B \-\-hostname
 Show the hostname: prefix in window names and the outer terminal title.
 .TP
-.B \-\-pane-titles
+.B \-\-titles
 Show the title row above each pane. Pane titles are off by default.
 .TP
 .BR \-h ", " \-\-help
@@ -278,7 +278,7 @@ The outer terminal title follows [murx] program, or [murx] hostname:program
 with --hostname. Its [murx] prefix is always present; --murx controls only
 the status label.
 Hostnames are shortened at the first dot.
-With \-\-pane-titles enabled, each pane has a title row above its content showing
+With \-\-titles enabled, each pane has a title row above its content showing
 [R N: title R], where N is the pane number. Active pane titles use colour7
 brackets/numbers, colour11 separator and colour15 title; inactive panes use
 colour8, colour3 and colour12. Toggle title rows in the Configuration menu.

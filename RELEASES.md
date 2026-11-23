@@ -1,3 +1,7 @@
+# Unreleased
+
+- Renamed `--pane-titles` to `--titles`.
+
 # murx 1.0.3 released
 
 **November 23, 2026**
