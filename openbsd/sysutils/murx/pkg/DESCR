@@ -1,0 +1,3 @@
+murx is a small terminal multiplexer with persistent named sessions,
+windows, split panes, scrollback, and support for multiple clients
+attached to a session. It has built-in defaults and no configuration file.

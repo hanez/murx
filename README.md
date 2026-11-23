@@ -515,6 +515,14 @@ verify its checksum, and build a package. Install the resulting package with
 `pkg add`. To update the port for a new release, change `DISTVERSION` and run
 `make makesum` after publishing the matching tag.
 
+### OpenBSD
+
+Copy the [`sysutils/murx` port](openbsd/sysutils/murx/) into an OpenBSD ports
+tree. From the port directory, run `make package` to fetch and verify the
+tagged source and build a package. Run `make install` to install it through
+the ports tree. For a new release, update `DISTNAME` and run `make makesum`
+after publishing the matching tag.
+
 ## Authors
 
 See [AUTHORS](AUTHORS) for project credits.

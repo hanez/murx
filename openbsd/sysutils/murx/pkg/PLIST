@@ -1,0 +1,6 @@
+@bin bin/murx
+@man man/man1/murx.1
+share/doc/murx/
+share/doc/murx/AUTHORS
+share/doc/murx/README.md
+share/doc/murx/RELEASES.md

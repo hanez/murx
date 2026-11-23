@@ -36,3 +36,6 @@ compile_commands.json
 
 # FreeBSD port build outputs
 /freebsd/sysutils/murx/work/
+
+# OpenBSD port build outputs
+/openbsd/sysutils/murx/w-*/
