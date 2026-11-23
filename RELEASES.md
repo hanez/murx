@@ -1,3 +1,12 @@
+# murx 1.0.2 released
+
+**November 23, 2026**
+
+- Use `--history 10000` to retain up to 10,000 scrollback lines per pane in a
+  new session. The default is 2,000 lines per pane.
+- Pane titles are off by default. Use `--pane-titles` when starting a session
+  or toggle them in the Configuration menu.
+
 # murx 1.0.1 released
 
 **November 23, 2026**

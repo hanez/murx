@@ -17,8 +17,10 @@ make
 ./murx --cwd work               # show the current directory in the status bar
 ./murx --murx work              # show [murx] on the left of the status bar
 ./murx -c 191a1c work           # use a grey status bar background
+./murx --history 10000 work     # keep up to 10,000 history lines per pane
 ./murx --clock work             # show the status bar clock
 ./murx --hostname work          # show the hostname: prefix in window titles
+./murx --pane-titles work       # show a title row above each pane
 ./murx -l, --list-sessions      # list running sessions without attaching
 ./murx --help                   # version, usage and all shortcuts
 ./murx -v, --version            # print the version and exit
@@ -69,10 +71,10 @@ and `--clock` to show the clock on the right. Use `--murx` to show `[murx]`
 on the left when `--cwd` is not enabled; the directory takes precedence if
 both are supplied. Use `--hostname` to show the `hostname:` prefix in window
 names and the outer terminal title. These display options are disabled by
-default. Use `--hide-pane-titles` to hide the title row above each pane;
-pane titles are shown by default. These options set the initial values for a
-new session; the `Configuration...` menu can change them in a running session
-(see [Menu](#menu)). To restore the previous default display, use
+default. Use `--pane-titles` to show the title row above each pane. These
+options set the initial values for a new session. The `Configuration...` menu
+can change them in a running session (see [Menu](#menu)). To restore the
+previous default display, use
 `murx --cwd --clock --hostname session`.
 
 ## Upgrading from moerx
@@ -322,7 +324,8 @@ scrollback, forced resize and kill server. `Configuration...` contains:
 - `Status line...` — position (top/bottom) and background (default, black
   `000000`, grey `191a1c`).
 - `Prefix...` — this client's Ctrl-key prefix, `a` through `z`.
-- Toggles for the current directory, clock, `[murx]` label and hostname.
+- Toggles for the current directory, clock, `[murx]` label, hostname and pane
+  titles.
 - `Reset display/status defaults`.
 
 Settings changes apply immediately. Session settings affect all attached
@@ -346,8 +349,12 @@ window shortcuts to switch directly, including `Ctrl-A n`, `Ctrl-A p`,
 chooser. Use `Ctrl-A c` to create a window while browsing. Returning to a 
 window restores its scrollback view and position.
 
-Each pane keeps up to 2,000 lines of normal screen history. The view is frozen
-while browsing; programs keep running and new output continues to be saved.
+Each pane keeps up to 2,000 lines of normal screen history by default.
+Use `murx --history 10000 work` when creating a session to keep up to 10,000
+lines per pane. The limit accepts 0 to 100,000 lines, with 0 disabling history
+retention. Reattaching to a session preserves its history limit.
+The view is frozen while browsing; programs keep running and new output
+continues to be saved when history retention is enabled.
 Scrollback views are private to each client and saved per pane while attached.
 Alternate-screen programs such as editors do not add history; opening
 scrollback there shows only their current screen. History is kept in memory,
@@ -379,11 +386,11 @@ Hard-coded:
   report root status; install them in each remote shell, including root's.
   A root shell that does not run the hooks cannot report its privilege change.
 - Pane borders are thin box-drawing lines (`─`, `│`, `┬`, `┼`, ...) in
-  `colour8`, drawn on the terminal's default background. By default, the row
-  above each pane is a title bar showing `[N: title]`: on the active pane,
-  brackets/numbers use `colour7`, separator `colour11`, title `colour15`; on
-  inactive panes, `colour8`, `colour3`, `colour12`. Use `--hide-pane-titles`
-  or the Configuration menu to hide title rows and give panes more space.
+  `colour8`, drawn on the terminal's default background. Enable title rows
+  with `--pane-titles` or the Configuration menu. Each title row shows
+  `[N: title]`. On the active pane, brackets and numbers use `colour7`, the
+  separator uses `colour11`, and the title uses `colour15`. Inactive panes
+  use `colour8`, `colour3`, and `colour12`.
 - Messages use `fg=colour6,bg=colour8`.
 - Menus use a black background with a `colour12` frame, `colour11` titles and
   selection, `colour14` accents and dim `colour8` hints and separators.

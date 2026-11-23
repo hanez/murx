@@ -29,9 +29,9 @@ outside the repo for geometry/logic checks; do not leave test files behind.
 
 - Windows use a binary `Layout` tree: `L_COLS` (left/right split) or
   `L_ROWS` (top/bottom split), with `Layout` x/y/w/h plus a `Pane` leaf.
-- `layout_apply()` assigns pane content rectangles. With pane titles shown
-  (default), each leaf reserves its top row for a title and sets
-  `pane->y = layout->y + 1`; with `--hide-pane-titles`, content fills the leaf.
+- `layout_apply()` assigns pane content rectangles. With `--pane-titles`,
+  each leaf reserves its top row for a title and sets
+  `pane->y = layout->y + 1`. By default, content fills the leaf.
 - Splits reserve one border column/row between children. With titles shown,
   horizontal splits use the lower pane's title row as the separator; with titles
   hidden, horizontal splits draw a border row like vertical splits.

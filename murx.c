@@ -87,7 +87,7 @@
 #define MURX_NOIPA
 #endif
 
-#define MURX_VERSION "1.0.1"
+#define MURX_VERSION "1.0.2"
 #define DEFAULT_PREFIX 0x01
 
 /* client -> server */
@@ -393,7 +393,8 @@ typedef enum {
     PS_STRING_ESC
 } ParseState;
 
-#define HISTORY_LINES 2000
+#define DEFAULT_HISTORY_LINES 2000
+#define MAX_HISTORY_LINES 100000
 
 typedef struct Pane Pane;
 
@@ -409,7 +410,7 @@ struct Pane {
     Grid *grid;
     int on_alt;
     Grid *history;         /* ring of rows, retaining their original widths */
-    int history_start, history_count;
+    int history_limit, history_start, history_count;
 
     int cx, cy;
     int wrap_pending;
@@ -551,13 +552,14 @@ static void em_scroll_up(Pane *p, int n) {
     if (n < 1) n = 1;
     if (n > p->scroll_bot - p->scroll_top + 1) n = p->scroll_bot - p->scroll_top + 1;
     /* Only normal full-screen scrolling contributes shell history. */
-    if (!p->on_alt && p->scroll_top == 0 && p->scroll_bot == g->h - 1) {
-        if (!p->history) p->history = xcalloc(HISTORY_LINES, sizeof(Grid));
+    if (p->history_limit > 0 && !p->on_alt &&
+        p->scroll_top == 0 && p->scroll_bot == g->h - 1) {
+        if (!p->history) p->history = xcalloc(p->history_limit, sizeof(Grid));
         for (int y = 0; y < n; y++) {
-            int slot = (p->history_start + p->history_count) % HISTORY_LINES;
-            if (p->history_count == HISTORY_LINES) {
+            int slot = (p->history_start + p->history_count) % p->history_limit;
+            if (p->history_count == p->history_limit) {
                 grid_free(&p->history[slot]);
-                p->history_start = (p->history_start + 1) % HISTORY_LINES;
+                p->history_start = (p->history_start + 1) % p->history_limit;
             } else p->history_count++;
             grid_init(&p->history[slot], g->w, 1);
             memcpy(p->history[slot].c, &g->c[y * g->w], (size_t)g->w * sizeof(Cell));
@@ -773,7 +775,7 @@ static void em_csi(Pane *p, const char *raw, int len, unsigned char final) {
         if (n < 1) n = 1;
         p->cx = 0;
         /* Further blank scrolling cannot change the screen or history. */
-        if (n > g->h + HISTORY_LINES) n = g->h + HISTORY_LINES;
+        if (n > g->h + p->history_limit) n = g->h + p->history_limit;
         for (int i = 0; i < n; i++) pane_lf(p);
         break;
     case 'F':
@@ -1325,6 +1327,7 @@ struct Session {
     int status_bottom;
     int32_t status_bg;      /* 0 uses the terminal default */
     DisplayOptions display;
+    int history_limit;
     Window *windows;
     Window *cur, *last;
     int nwin;
@@ -1521,14 +1524,14 @@ static void pane_free(Pane *p) {
     grid_free(&p->main_grid);
     grid_free(&p->alt_grid);
     if (p->history) {
-        for (int i = 0; i < HISTORY_LINES; i++) grid_free(&p->history[i]);
+        for (int i = 0; i < p->history_count; i++) grid_free(&p->history[i]);
         free(p->history);
     }
     free(p);
 }
 
 static Pane *pane_new(const char *cwd, int w, int h, const char *title,
-                      const char *session_name) {
+                      const char *session_name, int history_limit) {
     struct winsize iws;
     memset(&iws, 0, sizeof iws);
     iws.ws_col = tty_dimension(w > 0 ? w : 80);
@@ -1599,6 +1602,7 @@ static Pane *pane_new(const char *cwd, int w, int h, const char *title,
     p->pid = pid;
     p->alive = 1;
     p->tty_fd = slave_fd;
+    p->history_limit = history_limit;
     p->cursor_visible = 1;
     p->pen.fg = DEFAULT_COLOR;
     p->pen.bg = DEFAULT_COLOR;
@@ -1771,7 +1775,7 @@ static Window *window_new(Session *s, const char *name) {
     int pw = s->w > 0 ? s->w : 80;
     int ph = s->h > 1 ? s->h - 1 : 23;
     if (ph < 1) ph = 1;
-    Pane *p = pane_new(s->cwd, pw, ph, host, s->name);
+    Pane *p = pane_new(s->cwd, pw, ph, host, s->name, s->history_limit);
     if (!p) {
         free(w);
         return NULL;
@@ -3057,7 +3061,7 @@ static void switch_last_window(Session *s) {
 static Pane *host_pane_new(Session *s, int w, int h) {
     char host[128];
     short_hostname(host, sizeof host);
-    return pane_new(s->cwd, w, h, host, s->name);
+    return pane_new(s->cwd, w, h, host, s->name, s->history_limit);
 }
 
 static void split_pane(Session *s, int type) {
@@ -3469,7 +3473,7 @@ static void backscroll_start(Client *c, Session *s, int page_up) {
     grid_free(&view->grid);
     grid_init(&view->grid, p->grid->w, count + p->grid->h);
     for (int y = 0; y < count + p->grid->h; y++) {
-        Grid *row = y < count ? &p->history[(p->history_start + y) % HISTORY_LINES] : p->grid;
+        Grid *row = y < count ? &p->history[(p->history_start + y) % p->history_limit] : p->grid;
         int sy = y < count ? 0 : y - count;
         int width = row->w < view->grid.w ? row->w : view->grid.w;
         memcpy(&view->grid.c[y * view->grid.w], &row->c[sy * row->w],
@@ -3558,7 +3562,6 @@ static void menu_action(Client *c, Session *s, int action) {
     case ACT_KILL_SERVER: start_confirm(c, 2, "kill-server? (y/n) "); break;
     case ACT_RESET_DISPLAY:
         memset(&s->display, 0, sizeof s->display);
-        s->display.show_pane_titles = 1;
         s->status_bottom = 0;
         s->status_bg = 0;
         session_layout(s);
@@ -4416,7 +4419,8 @@ static void server_fail(int readyfd, const char *stage, int err) {
     close(readyfd);
 }
 
-static void server_start(const char *path, const char *name, int readyfd, const DisplayOptions *display) {
+static void server_start(const char *path, const char *name, int readyfd,
+                         const DisplayOptions *display, int history_limit) {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
     signal(SIGCHLD, SIG_DFL);
@@ -4471,6 +4475,7 @@ static void server_start(const char *path, const char *name, int readyfd, const 
     s->h = 24;
     s->running = 1;
     s->display = *display;
+    s->history_limit = history_limit;
     s->last_status = now_ms();
 
     Window *w = window_new(s, NULL);
@@ -4631,7 +4636,8 @@ static int ensure_socket_dir(void) {
     return 0;
 }
 
-static int spawn_server(const char *path, const char *name, const DisplayOptions *display) {
+static int spawn_server(const char *path, const char *name,
+                        const DisplayOptions *display, int history_limit) {
     if (ensure_socket_dir() < 0) return -1;
     char dir[PATH_MAX], lockpath[PATH_MAX + 64];
     socket_dir(dir, sizeof dir);
@@ -4679,7 +4685,7 @@ static int spawn_server(const char *path, const char *name, const DisplayOptions
             if (dn > 2) close(dn);
         }
         close(lock);
-        server_start(path, name, p[1], display);
+        server_start(path, name, p[1], display, history_limit);
         _exit(1);
     }
     close(p[1]);
@@ -4969,16 +4975,21 @@ static void print_help(FILE *out) {
     help_row(out, "-p, --prefix LETTER", "client prefix Ctrl-LETTER (a-z, default: a)");
     help_row(out, "-s, --status POSITION", "status line: top or bottom (new sessions: top)");
     help_row(out, "-c, --color RRGGBB", "status bar background, six hex digits (e.g. 000000)");
+    char history_help[96];
+    snprintf(history_help, sizeof history_help,
+             "history lines per pane in new sessions (0-%d, default: %d)",
+             MAX_HISTORY_LINES, DEFAULT_HISTORY_LINES);
+    help_row(out, "--history LINES", history_help);
     help_row(out, "--cwd", "show current directory in status bar");
     help_row(out, "--clock", "show clock in status bar");
     help_row(out, "--murx", "show [murx] in status bar unless --cwd is set");
     help_row(out, "--hostname", "show hostname: prefix in window titles");
-    help_row(out, "--hide-pane-titles", "hide the title row above each pane");
+    help_row(out, "--pane-titles", "show the title row above each pane (default: off)");
 
     fputs("\n"
           "Without -s or -c, an existing session keeps its position and color.\n"
           "Display options set new session values and can be changed later from\n"
-          "the Configuration menu. Pane titles are shown by default.\n"
+          "the Configuration menu.\n"
           "\n"
           "Shortcuts (press the prefix, release it, then press the key shown;\n"
           "Ctrl-A is the default prefix):\n"
@@ -5039,7 +5050,8 @@ int main(int argc, char **argv) {
     unsigned char prefix = DEFAULT_PREFIX;
     int status = 0;
     uint32_t color = 0;
-    DisplayOptions display = {0, 0, 0, 0, 1};
+    DisplayOptions display = {0};
+    int history_limit = DEFAULT_HISTORY_LINES;
     int list = 0;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1]) {
         const char *option = argv[argi++];
@@ -5054,6 +5066,17 @@ int main(int argc, char **argv) {
         }
         if (strcmp(option, "-l") == 0 || strcmp(option, "--list-sessions") == 0) {
             list = 1;
+        } else if (strcmp(option, "--history") == 0) {
+            const char *value = argi < argc ? argv[argi] : "";
+            char *end;
+            long lines = strtol(value, &end, 10);
+            if (*value < '0' || *value > '9' || *end || lines > MAX_HISTORY_LINES) {
+                fprintf(stderr, "murx: --history requires a line count from 0 to %d\n",
+                        MAX_HISTORY_LINES);
+                return 2;
+            }
+            history_limit = (int)lines;
+            argi++;
         } else if (strcmp(option, "--cwd") == 0) {
             display.show_cwd = 1;
         } else if (strcmp(option, "--clock") == 0) {
@@ -5062,8 +5085,8 @@ int main(int argc, char **argv) {
             display.show_murx = 1;
         } else if (strcmp(option, "--hostname") == 0) {
             display.show_hostname = 1;
-        } else if (strcmp(option, "--hide-pane-titles") == 0) {
-            display.show_pane_titles = 0;
+        } else if (strcmp(option, "--pane-titles") == 0) {
+            display.show_pane_titles = 1;
         } else if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
             if (argi >= argc || !parse_prefix(argv[argi], &prefix)) {
                 fprintf(stderr, "murx: %s requires a letter from a through z\n", option);
@@ -5123,7 +5146,7 @@ int main(int argc, char **argv) {
     make_socket_path(name, path, sizeof path);
 
     int fd = connect_session(path);
-    if (fd < 0) fd = spawn_server(path, name, &display);
+    if (fd < 0) fd = spawn_server(path, name, &display, history_limit);
     if (fd < 0) {
         if (errno != 0) {
             fprintf(stderr, "murx: cannot start or attach session '%s': %s\n",
