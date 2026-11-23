@@ -328,7 +328,8 @@ scrollback, forced resize and kill server. `Configuration...` contains:
   titles.
 - `Reset display/status defaults`.
 
-Settings changes apply immediately. Session settings affect all attached
+Press Enter on a toggle to turn it on or off. Settings changes apply
+immediately. Session settings affect all attached
 clients; the prefix is per-client. Nothing is written to disk, so changes
 last until the session ends or you change them again. The command-line
 options still decide the initial values when a session starts.

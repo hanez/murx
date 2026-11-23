@@ -3502,27 +3502,28 @@ static void fit_session_to_client(Client *c, Session *s) {
 }
 
 static void menu_apply_setting(Client *c, Session *s, const MenuItem *it) {
+    int value = it->type == MI_TOGGLE ? !menu_setting_on(s, c, it) : it->arg;
     switch (it->id) {
     case SET_STATUS_BOTTOM:
-        s->status_bottom = it->arg ? 1 : 0;
+        s->status_bottom = value;
         session_layout(s);
         s->redraw = 1;
         break;
     case SET_STATUS_BG:
-        s->status_bg = it->arg == 1 ? (int32_t)RGB_FLAG :
-                       it->arg == 2 ? (int32_t)(RGB_FLAG | 0x191a1c) : 0;
+        s->status_bg = value == 1 ? (int32_t)RGB_FLAG :
+                       value == 2 ? (int32_t)(RGB_FLAG | 0x191a1c) : 0;
         s->redraw = 1;
         break;
-    case SET_SHOW_CWD:      s->display.show_cwd = it->arg ? 1 : 0; break;
-    case SET_SHOW_CLOCK:    s->display.show_clock = it->arg ? 1 : 0; break;
-    case SET_SHOW_MURX:     s->display.show_murx = it->arg ? 1 : 0; break;
-    case SET_SHOW_HOSTNAME: s->display.show_hostname = it->arg ? 1 : 0; break;
+    case SET_SHOW_CWD:      s->display.show_cwd = value; break;
+    case SET_SHOW_CLOCK:    s->display.show_clock = value; break;
+    case SET_SHOW_MURX:     s->display.show_murx = value; break;
+    case SET_SHOW_HOSTNAME: s->display.show_hostname = value; break;
     case SET_SHOW_PANE_TITLES:
-        s->display.show_pane_titles = it->arg ? 1 : 0;
+        s->display.show_pane_titles = value;
         session_layout(s);
         s->redraw = 1;
         break;
-    case SET_PREFIX:        c->prefix = (unsigned char)it->arg; break;
+    case SET_PREFIX:        c->prefix = (unsigned char)value; break;
     default: return;
     }
     /* Window names carry the hostname setting, so refresh them at once. */
