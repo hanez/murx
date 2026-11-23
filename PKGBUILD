@@ -11,7 +11,7 @@ source=('murx.c' 'Makefile' 'murx.1' 'README.md' 'LICENSE' 'AUTHORS')
 sha256sums=('b807f06d82023878160e5a5234fff53f60bc2e9a18b71f449693cd72264666bd'
             '4301fe8afe6a6e7cc665d8820ec43047f6af6f3b394a3a3a4f6e52dcf32fdec2'
             'fbe804fcc53a3b3e261fcf7381fe90dddfb5035b4182fbe92013a921b297f8bc'
-            'e735ed91cac752e0086e7028d9946887c54a1346e6803de2bed47d8314e57b75'
+            '3c636ad59432991d29591fe956565ff53ddb78751f8c448b18a042f537102983'
             '31c5556be4cdd9bf52bb55f18ead0c68a4f0e793c2c2dab0a2a2c6d92407d0d4'
             'dbc8a4fc569d4cd7bcd45516ccc98c1396fce0682c262103069c8f5150538cdb')
 
