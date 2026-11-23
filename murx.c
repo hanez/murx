@@ -87,7 +87,7 @@
 #define MURX_NOIPA
 #endif
 
-#define MURX_VERSION "1.0"
+#define MURX_VERSION "1.0.1"
 #define DEFAULT_PREFIX 0x01
 
 /* client -> server */
