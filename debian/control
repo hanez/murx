@@ -1,0 +1,16 @@
+Source: murx
+Section: utils
+Priority: optional
+Maintainer: Johannes Findeisen <you@hanez.org>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://codeberg.org/armin/murx
+
+Package: murx
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: small persistent terminal multiplexer
+ murx runs shells and terminal applications in named sessions with windows
+ and split panes. Sessions keep running when clients detach, and several
+ clients can attach to the same session.

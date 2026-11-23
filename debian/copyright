@@ -1,0 +1,15 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: murx
+Source: https://codeberg.org/armin/murx
+
+Files: *
+Copyright: 2026 Armin Jenewein
+License: Apache-2.0
+
+Files: debian/*
+Copyright: 2026 Johannes Findeisen
+License: Apache-2.0
+
+License: Apache-2.0
+ On Debian systems, the full text of the Apache License, Version 2.0
+ is available at /usr/share/common-licenses/Apache-2.0.

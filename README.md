@@ -443,7 +443,7 @@ automatically on the BSDs where it is needed). Tested with Clang and
 GCC 16; `grid_resize()` carries a guarded workaround for a GCC 16 optimizer bug
 that otherwise collapses pane grids to 1x1.
 
-## Linux packages
+## Packages
 
 The [Alpine recipe](alpine/APKBUILD) and [Arch recipe](arch/PKGBUILD)
 build from the local checkout using symlinks to the source files. The package
@@ -494,6 +494,26 @@ After changing a packaged source file, run `make pkgsums` to sync both package
 versions and refresh both sets of checksums. This target requires `abuild`
 and `updpkgsums` (from `pacman-contrib`). Neither recipe
 requires a test suite; its check step runs `murx --help` as a smoke check.
+
+### Debian
+
+The [Debian packaging](debian/) builds from the local checkout. Install
+`build-essential` and `debhelper`, then run:
+
+```sh
+dpkg-buildpackage -b -us -uc
+```
+
+The resulting `murx_*.deb` is written to the parent directory. Install it
+with `apt install ../murx_1.0.3-1_$(dpkg --print-architecture).deb`.
+
+### FreeBSD
+
+Copy the [`sysutils/murx` port](freebsd/sysutils/murx/) into a FreeBSD Ports
+tree. From the port directory, run `make package` to fetch the tagged source,
+verify its checksum, and build a package. Install the resulting package with
+`pkg add`. To update the port for a new release, change `DISTVERSION` and run
+`make makesum` after publishing the matching tag.
 
 ## Authors
 

@@ -25,3 +25,14 @@ src/
 # Tooling
 compile_commands.json
 .cache/
+
+# Debian build outputs
+/debian/.debhelper/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/murx/
+/debian/*.debhelper.log
+/debian/*.substvars
+
+# FreeBSD port build outputs
+/freebsd/sysutils/murx/work/
