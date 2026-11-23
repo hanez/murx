@@ -28,29 +28,38 @@ clean:
 	rm -f murx
 
 pkgclean:
-	rm -rf *.apk
-	rm -rf *.xz
+	rm -f *.apk alpine/*.apk
+	rm -f *.xz arch/*.pkg.tar.*
 
-pkgalpine: pkgclean
-	abuild checksum
-	abuild -r
+pkgsources:
+	@for dir in alpine arch; do \
+	    for source in murx.c Makefile murx.1 README.md LICENSE AUTHORS; do \
+	        if [ ! -e "$$dir/$$source" ] && [ ! -L "$$dir/$$source" ]; then \
+	            ln -s "../$$source" "$$dir/$$source" || exit 1; \
+	        fi; \
+	    done; \
+	done
 
-pkgarch: pkgclean
-	updpkgsums
-	makepkg
+pkgalpine: pkgclean pkgsources
+	cd alpine && abuild checksum
+	cd alpine && abuild -r
 
-pkgsums:
+pkgarch: pkgclean pkgsources
+	cd arch && updpkgsums
+	cd arch && makepkg
+
+pkgsums: pkgsources
 	@version=$$(sed -n 's/^#define MURX_VERSION "\([^"]*\)"$$/\1/p' murx.c); \
 	if [ -z "$$version" ]; then \
 	    echo "Could not read MURX_VERSION from murx.c" >&2; exit 1; \
 	fi; \
 	tmp=$$(mktemp .pkgsums.XXXXXX) || exit 1; \
 	trap 'rm -f "$$tmp"' 0; \
-	for recipe in APKBUILD PKGBUILD; do \
+	for recipe in alpine/APKBUILD arch/PKGBUILD; do \
 	    sed "s/^pkgver=.*/pkgver=$$version/" "$$recipe" > "$$tmp" && \
 	        cat "$$tmp" > "$$recipe" || exit 1; \
 	done
-	abuild checksum
-	updpkgsums
+	cd alpine && abuild checksum
+	cd arch && updpkgsums
 
-.PHONY: all install uninstall clean pkgclean pkgalpine pkgarch pkgsums
+.PHONY: all install uninstall clean pkgclean pkgsources pkgalpine pkgarch pkgsums

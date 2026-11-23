@@ -4,6 +4,10 @@
 src/
 
 # Packages
+/alpine/*
+!/alpine/APKBUILD
+/arch/*
+!/arch/PKGBUILD
 *.apk
 *.xz
 

@@ -445,10 +445,10 @@ that otherwise collapses pane grids to 1x1.
 
 ## Linux packages
 
-The root directory includes [APKBUILD](APKBUILD) for Alpine Linux and
-[PKGBUILD](PKGBUILD) for Arch Linux. Both build the local source files rather
-than downloading a release. The package version comes from `MURX_VERSION` in
-`murx.c`; adjust the package release fields separately as needed. Both recipes
+The [Alpine recipe](alpine/APKBUILD) and [Arch recipe](arch/PKGBUILD)
+build from the local checkout using symlinks to the source files. The package
+version comes from `MURX_VERSION` in `murx.c`. Adjust the package release fields
+separately as needed. Both recipes
 build with the default C compiler and pass distro `CFLAGS` to `make`. The
 packages install under `/usr`, including the manual, README, AUTHORS and
 license.
@@ -457,7 +457,7 @@ On Alpine, install `alpine-sdk`, configure your abuild signing key with
 `abuild-keygen -a -i`, and run as a regular user with abuild configured:
 
 ```sh
-abuild -r
+make pkgalpine
 ```
 
 Install the resulting `murx` package and its `murx-doc` subpackage for the
@@ -468,10 +468,13 @@ package after trusting your local signing key.
 On Arch, install `base-devel` and run as a regular user:
 
 ```sh
+make pkgsources
+cd arch
 makepkg -si
 ```
 
-This builds the package and installs it through pacman. The recipe lists
+This builds the package and installs it through pacman. To build from the
+repository root, run `make pkgarch`. The recipe lists
 `x86_64` and `aarch64`; builds run on the current architecture.
 
 For Gentoo, copy the [`app-misc/murx` package directory](gentoo/app-misc/murx)
