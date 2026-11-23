@@ -474,6 +474,19 @@ makepkg -si
 This builds the package and installs it through pacman. The recipe lists
 `x86_64` and `aarch64`; builds run on the current architecture.
 
+For Gentoo, copy the [`app-misc/murx` package directory](gentoo/app-misc/murx)
+into a configured local Portage overlay. The ebuild fetches the tagged release
+archive and includes a Manifest with its checksums. It is keyworded `~amd64`;
+accept that keyword for `app-misc/murx` if your system uses stable keywords.
+Then install it with:
+
+```sh
+emerge --ask app-misc/murx
+```
+
+For a new Gentoo release, copy the ebuild to the new versioned filename and
+run `ebuild murx-VERSION.ebuild manifest` after publishing the matching tag.
+
 After changing a packaged source file, run `make pkgsums` to sync both package
 versions and refresh both sets of checksums. This target requires `abuild`
 and `updpkgsums` (from `pacman-contrib`). Neither recipe
