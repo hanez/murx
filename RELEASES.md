@@ -1,5 +1,8 @@
 # Unreleased
 
+- Added short options for `--history` (`-H`), `--cwd` (`-d`),
+  `--clock` (`-C`), `--murx` (`-m`), `--hostname` (`-n`), and
+  `--titles` (`-t`).
 - Renamed `--pane-titles` to `--titles`.
 
 # murx 1.0.3 released

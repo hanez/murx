@@ -14,16 +14,16 @@ make
 ./murx --prefix x work          # same as -p x
 ./murx -s bottom work           # show the session status line at the bottom
 ./murx --status bottom work     # same as -s bottom
-./murx --cwd work               # show the current directory in the status bar
-./murx --murx work              # show [murx] on the left of the status bar
+./murx -d work                  # --cwd, show the current directory in the status bar
+./murx -m work                  # --murx, show [murx] on the left of the status bar
 ./murx -c 191a1c work           # use a grey status bar background
-./murx --history 10000 work     # keep up to 10,000 history lines per pane
-./murx --clock work             # show the status bar clock
-./murx --hostname work          # show the hostname: prefix in window titles
-./murx --titles work            # show a title row above each pane
-./murx -l, --list-sessions      # list running sessions without attaching
-./murx --help                   # logo, version, usage and shortcuts
-./murx -v, --version            # print the version and exit
+./murx -H 10000 work            # --history, keep up to 10,000 history lines per pane
+./murx -C work                  # --clock, show the status bar clock
+./murx -n work                  # --hostname, show the hostname: prefix in window titles
+./murx -t work                  # --titles, show a title row above each pane
+./murx -l                       # --list-sessions, list running sessions without attaching
+./murx -h                       # --help, logo, version, usage and shortcuts
+./murx -v                       # --version, print the version and exit
 ```
 
 Detach with `Ctrl-A d`. Run `murx` again to reattach.

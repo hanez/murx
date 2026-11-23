@@ -6,12 +6,12 @@ murx \- small persistent terminal multiplexer
 .RB [ \-p " letter"]
 .RB [ \-s " top|bottom"]
 .RB [ \-c " RRGGBB"]
-.RB [ \-\-history " lines"]
-.RB [ \-\-cwd ]
-.RB [ \-\-clock ]
-.RB [ \-\-murx ]
-.RB [ \-\-hostname ]
-.RB [ \-\-titles ]
+.RB [ \-H " lines"]
+.RB [ \-d ]
+.RB [ \-C ]
+.RB [ \-m ]
+.RB [ \-n ]
+.RB [ \-t ]
 .RB [ \-\- ]
 .RI [ session ]
 .br
@@ -46,7 +46,7 @@ hyphens or underscores. Use
 before a name beginning with a hyphen.
 .SH OPTIONS
 .TP
-.BR \-\-history " lines"
+.BR \-H ", " \-\-history " lines"
 Set the maximum number of normal-screen history lines retained per pane
 in a new session. Accepts 0 to 100,000, with 0 disabling history retention.
 Reattaching preserves the existing session's limit.
@@ -78,21 +78,21 @@ Supply six hexadecimal digits, such as 000000 for black.
 Omitting this option preserves the session's color when reattaching. New
 sessions use the terminal's default background unless a color is supplied.
 .TP
-.B \-\-cwd
+.BR \-d ", " \-\-cwd
 Show the current directory at the left of the status line.
 .TP
-.B \-\-clock
+.BR \-C ", " \-\-clock
 Show the status clock.
 .TP
-.B \-\-murx
+.BR \-m ", " \-\-murx
 Show the [murx] label at the left of the status line when
 .B \-\-cwd
 is not enabled. The directory takes precedence if both options are supplied.
 .TP
-.B \-\-hostname
+.BR \-n ", " \-\-hostname
 Show the hostname: prefix in window names and the outer terminal title.
 .TP
-.B \-\-titles
+.BR \-t ", " \-\-titles
 Show the title row above each pane. Pane titles are off by default.
 .TP
 .BR \-h ", " \-\-help

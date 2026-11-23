@@ -4989,12 +4989,12 @@ static void print_help(FILE *out) {
     snprintf(history_help, sizeof history_help,
              "history lines per pane in new sessions (0-%d, default: %d)",
              MAX_HISTORY_LINES, DEFAULT_HISTORY_LINES);
-    help_row(out, "--history LINES", history_help);
-    help_row(out, "--cwd", "show current directory in status bar");
-    help_row(out, "--clock", "show clock in status bar");
-    help_row(out, "--murx", "show [murx] in status bar unless --cwd is set");
-    help_row(out, "--hostname", "show hostname: prefix in window titles");
-    help_row(out, "--titles", "show the title row above each pane (default: off)");
+    help_row(out, "-H, --history LINES", history_help);
+    help_row(out, "-d, --cwd", "show current directory in status bar");
+    help_row(out, "-C, --clock", "show clock in status bar");
+    help_row(out, "-m, --murx", "show [murx] in status bar unless --cwd is set");
+    help_row(out, "-n, --hostname", "show hostname: prefix in window titles");
+    help_row(out, "-t, --titles", "show the title row above each pane (default: off)");
 
     fputs("\n"
           "Without -s or -c, an existing session keeps its position and color.\n"
@@ -5076,7 +5076,7 @@ int main(int argc, char **argv) {
         }
         if (strcmp(option, "-l") == 0 || strcmp(option, "--list-sessions") == 0) {
             list = 1;
-        } else if (strcmp(option, "--history") == 0) {
+        } else if (strcmp(option, "-H") == 0 || strcmp(option, "--history") == 0) {
             const char *value = argi < argc ? argv[argi] : "";
             char *end;
             long lines = strtol(value, &end, 10);
@@ -5087,15 +5087,15 @@ int main(int argc, char **argv) {
             }
             history_limit = (int)lines;
             argi++;
-        } else if (strcmp(option, "--cwd") == 0) {
+        } else if (strcmp(option, "-d") == 0 || strcmp(option, "--cwd") == 0) {
             display.show_cwd = 1;
-        } else if (strcmp(option, "--clock") == 0) {
+        } else if (strcmp(option, "-C") == 0 || strcmp(option, "--clock") == 0) {
             display.show_clock = 1;
-        } else if (strcmp(option, "--murx") == 0) {
+        } else if (strcmp(option, "-m") == 0 || strcmp(option, "--murx") == 0) {
             display.show_murx = 1;
-        } else if (strcmp(option, "--hostname") == 0) {
+        } else if (strcmp(option, "-n") == 0 || strcmp(option, "--hostname") == 0) {
             display.show_hostname = 1;
-        } else if (strcmp(option, "--titles") == 0) {
+        } else if (strcmp(option, "-t") == 0 || strcmp(option, "--titles") == 0) {
             display.show_pane_titles = 1;
         } else if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
             if (argi >= argc || !parse_prefix(argv[argi], &prefix)) {
