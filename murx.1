@@ -5,7 +5,7 @@ murx \- small persistent terminal multiplexer
 .B murx
 .RB [ \-p " letter"]
 .RB [ \-s " top|bottom"]
-.RB [ \-c " RRGGBB"]
+.RB [ \-c " COLOR"]
 .RB [ \-H " lines"]
 .RB [ \-d ]
 .RB [ \-C ]
@@ -72,9 +72,12 @@ New sessions default to top. An explicit choice changes an existing session
 for all clients. Omitting this option preserves the session's position.
 Prompts and messages follow the status line.
 .TP
-.BR \-c " RRGGBB, " \-\-color " RRGGBB"
+.BR \-c " COLOR, " \-\-color " COLOR"
 Set the session's status bar background for all attached clients.
-Supply six hexadecimal digits, such as 000000 for black.
+Supply six hexadecimal digits (RRGGBB), such as 191a1c, or an xterm palette
+name such as NavyBlue or navy-blue. Names are case-insensitive, and spaces,
+hyphens and underscores are ignored. Repeated names select the lowest
+palette index. Append :INDEX to choose a specific entry, as in Blue3:20.
 Omitting this option preserves the session's color when reattaching. New
 sessions use the terminal's default background unless a color is supplied.
 .TP

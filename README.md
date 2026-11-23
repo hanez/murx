@@ -396,9 +396,12 @@ Hard-coded:
 - Menus use a black background with a `colour12` frame, `colour11` titles and
   selection, `colour14` accents and dim `colour8` hints and separators.
 
-Use `-c RRGGBB` or `--color RRGGBB` to set the session's status bar
-background for all attached clients. Supply six hexadecimal digits, such as
-`000000` for black. The session remembers the color across reattachments. New
+Use `-c COLOR` or `--color COLOR` to set the session's status bar
+background for all attached clients. Supply six hexadecimal digits such as
+`191a1c`, or an xterm palette name such as `NavyBlue` or `navy-blue`. Names
+are case-insensitive, and spaces, hyphens and underscores are ignored. A
+repeated name selects the lowest palette index. Use `Blue3:20` to select a
+specific entry. The session remembers the color across reattachments. New
 sessions use the terminal's default background unless a color is supplied.
 
 Colours are written to the outer terminal using 256-colour SGR (`38;5;n` /
