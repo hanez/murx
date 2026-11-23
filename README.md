@@ -17,8 +17,9 @@ make
 ./murx -c 191a1c work           # use a grey status bar background
 ./murx --clock work             # show the status bar clock
 ./murx --hostname work          # show the hostname: prefix in window titles
-./murx -l                       # list running sessions (or --list-sessions)
-./murx --help                   # all shortcuts
+./murx -l, --list-sessions      # list running sessions without attaching
+./murx --help                   # version, usage and all shortcuts
+./murx -v, --version            # print the version and exit
 ```
 
 Detach with `Ctrl-A d`. Run `murx` again to reattach.
@@ -94,6 +95,7 @@ and `murx-root`.
 - Application cursor-key mode follows the active pane, so arrow navigation
   works in programs such as Midnight Commander. Menus and prompts use normal
   cursor-key mode; detaching restores normal cursor keys in the outer terminal.
+- Home (Pos1) and End use the pane’s `screen-256color` key sequences.
 - Multiple clients can attach to the same session. The most recently attached
   or resized client sets the session size; a larger client shows the session
   centred in its terminal, while a smaller client shows the top-left part.
@@ -435,11 +437,11 @@ that otherwise collapses pane grids to 1x1.
 
 The root directory includes [APKBUILD](APKBUILD) for Alpine Linux and
 [PKGBUILD](PKGBUILD) for Arch Linux. Both build the local source files rather
-than downloading a release. Version `0.20261116` identifies an unreleased
-snapshot; update the version and release fields when packaging a newer snapshot.
-Both recipes build with the default C compiler and pass distro `CFLAGS` to
-`make`. The packages install under `/usr`, including the manual, README,
-AUTHORS and license.
+than downloading a release. The package version comes from `MURX_VERSION` in
+`murx.c`; adjust the package release fields separately as needed. Both recipes
+build with the default C compiler and pass distro `CFLAGS` to `make`. The
+packages install under `/usr`, including the manual, README, AUTHORS and
+license.
 
 On Alpine, install `alpine-sdk`, configure your abuild signing key with
 `abuild-keygen -a -i`, and run as a regular user with abuild configured:
@@ -462,9 +464,9 @@ makepkg -si
 This builds the package and installs it through pacman. The recipe lists
 `x86_64` and `aarch64`; builds run on the current architecture.
 
-After changing any packaged source file (`murx.c`, `Makefile`, `murx.1`,
-`README.md`, `LICENSE` or `AUTHORS`), refresh recipe checksums with `abuild checksum`
-on Alpine and `updpkgsums` (from `pacman-contrib`) on Arch. Neither recipe
+After changing a packaged source file, run `make pkgsums` to sync both package
+versions and refresh both sets of checksums. This target requires `abuild`
+and `updpkgsums` (from `pacman-contrib`). Neither recipe
 requires a test suite; its check step runs `murx --help` as a smoke check.
 
 ## Authors

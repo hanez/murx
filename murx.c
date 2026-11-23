@@ -33,7 +33,8 @@
  * One binary, no config file. Shortcuts and the interface palette have built-in defaults.
  *
  *   murx [session]     attach to session (default "0"), or start it
- *   murx -h|--help     show usage and all Ctrl-A shortcut chains
+ *   murx -h|--help     show version, usage and all Ctrl-A shortcut chains
+ *   murx -v|--version  show version
  *
  * Pure C99 + POSIX (macOS / Linux / FreeBSD / OpenBSD).
  */
@@ -86,6 +87,7 @@
 #define MURX_NOIPA
 #endif
 
+#define MURX_VERSION "1.0"
 #define DEFAULT_PREFIX 0x01
 
 /* client -> server */
@@ -3908,11 +3910,13 @@ static void menu_key(Client *c, Session *s, const unsigned char *buf, size_t n, 
 
 static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t n) {
     if (n > sizeof c->in - c->inlen) n = sizeof c->in - c->inlen;
-    if (n == 0 && c->inlen == 1 && c->in[0] == 27 && c->escape_since &&
+    if (n == 0 && c->escape_since &&
         now_ms() - c->escape_since >= 100) {
         Scrollback *view = scrollback_current(c, s);
         if (view) scrollback_remove(scrollback_slot(c, view->pane));
         if (c->mode == 2) c->mode = 0;             /* a lone Escape closes menus */
+        else if (!view && !c->prefix_pending && s->cur && s->cur->active)
+            pane_write(s->cur->active, c->in, c->inlen);
         c->prefix_pending = 0;
         c->inlen = 0;
         c->escape_since = 0;
@@ -3980,8 +3984,21 @@ static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t 
             i++;
             continue;
         }
-        size_t j = i;
-        while (j < c->inlen && c->in[j] != c->prefix) j++;
+        /* screen-256color describes Home and End as CSI 1~ and CSI 4~. */
+        if (p[0] == 27) {
+            if (left == 1) break;
+            if (p[1] == '[' || p[1] == 'O') {
+                if (left == 2) break;
+                if (p[2] == 'H' || p[2] == 'F') {
+                    if (s->cur && s->cur->active)
+                        pane_write(s->cur->active, p[2] == 'H' ? "\x1b[1~" : "\x1b[4~", 4);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        size_t j = i + 1;
+        while (j < c->inlen && c->in[j] != c->prefix && c->in[j] != 27) j++;
         if (s->cur && s->cur->active) pane_write(s->cur->active, c->in + i, j - i);
         i = j;
     }
@@ -3989,8 +4006,9 @@ static void client_feed(Client *c, Session *s, const unsigned char *buf, size_t 
         memmove(c->in, c->in + i, c->inlen - i);
         c->inlen -= i;
     }
-    if (c->inlen == 1 && c->in[0] == 27 &&
-        (c->mode == 2 || scrollback_current(c, s) || c->prefix_pending)) {
+    if (c->inlen && c->in[0] == 27 &&
+        ((!c->mode && !c->locked && !scrollback_current(c, s) && !c->prefix_pending) ||
+         (c->inlen == 1 && (c->mode == 2 || scrollback_current(c, s) || c->prefix_pending)))) {
         if (!c->escape_since) c->escape_since = now_ms();
     } else c->escape_since = 0;
 }
@@ -4260,6 +4278,11 @@ static void run_server(Session *s) {
         }
 
         int timeout = 200;
+        for (Client *c = s->clients; c; c = c->next) {
+            if (!c->escape_since) continue;
+            long long remaining = 100 - (now_ms() - c->escape_since);
+            if (remaining < timeout) timeout = remaining > 0 ? (int)remaining : 0;
+        }
         int pr = poll(pfds, (nfds_t)idx, timeout);
         if (pr < 0) {
             int interrupted = errno == EINTR;
@@ -4932,6 +4955,7 @@ static void help_row(FILE *out, const char *left, const char *right) {
 }
 
 static void print_help(FILE *out) {
+    fprintf(out, "murx %s\n\n", MURX_VERSION);
     fputs("usage: murx [OPTIONS] [session]\n"
           "\n"
           "Attach to a running session, starting a server if needed. The session\n"
@@ -4940,6 +4964,7 @@ static void print_help(FILE *out) {
           "Options:\n", out);
 
     help_row(out, "-h, --help", "show this help and exit");
+    help_row(out, "-v, --version", "print the version and exit");
     help_row(out, "-l, --list-sessions", "list running sessions without attaching");
     help_row(out, "-p, --prefix LETTER", "client prefix Ctrl-LETTER (a-z, default: a)");
     help_row(out, "-s, --status POSITION", "status line: top or bottom (new sessions: top)");
@@ -5021,6 +5046,10 @@ int main(int argc, char **argv) {
         if (strcmp(option, "--") == 0) break;
         if (strcmp(option, "-h") == 0 || strcmp(option, "--help") == 0) {
             print_help(stdout);
+            return 0;
+        }
+        if (strcmp(option, "-v") == 0 || strcmp(option, "--version") == 0) {
+            puts("murx " MURX_VERSION);
             return 0;
         }
         if (strcmp(option, "-l") == 0 || strcmp(option, "--list-sessions") == 0) {

@@ -17,6 +17,9 @@ murx \- small persistent terminal multiplexer
 .BR \-h " | " \-\-help
 .br
 .B murx
+.BR \-v " | " \-\-version
+.br
+.B murx
 .BR \-l " | " \-\-list\-sessions
 .SH DESCRIPTION
 .B murx
@@ -85,7 +88,10 @@ Show the hostname: prefix in window names and the outer terminal title.
 Hide the title row above each pane. Pane titles are shown by default.
 .TP
 .BR \-h ", " \-\-help
-Print usage and keyboard shortcuts, then exit.
+Print the program version, usage and keyboard shortcuts, then exit.
+.TP
+.BR \-v ", " \-\-version
+Print the program version and exit.
 .PP
 Display options set a new session's values; the Configuration menu can
 change them in a running session. The cwd, clock, [murx] label and hostname

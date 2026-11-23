@@ -1,6 +1,6 @@
-# Local source snapshot; refresh checksums with `updpkgsums` after edits.
+# Local source snapshot; refresh version and checksums with `make pkgsums`.
 pkgname=murx
-pkgver=0.20261116
+pkgver=1.0
 pkgrel=1
 pkgdesc='Small persistent terminal multiplexer'
 arch=('x86_64' 'aarch64')
@@ -8,10 +8,10 @@ url='https://codeberg.org/armin/murx'
 license=('Apache-2.0')
 depends=('glibc')
 source=('murx.c' 'Makefile' 'murx.1' 'README.md' 'LICENSE' 'AUTHORS')
-sha256sums=('ef7a6d215ec78876a7eb850eae5bb554011c4e12b4f0607f57d9195d9e2ba821'
-            'c683ed74c664ebb2a72603297367ed102afdf27e4d6cee47920db8632a8efa91'
-            'd2219b9be02a6d588c593eb001c2c7f1ada845c4c72fa5837937d08192572678'
-            '7b47bf380ba9c9c5defede500514fba6527c8202e64d8f9f622c09de7c5610e8'
+sha256sums=('dc7eea9afcc33209d52a0a0a9f654444ece16a122127ffae8ac7f19942521908'
+            '4301fe8afe6a6e7cc665d8820ec43047f6af6f3b394a3a3a4f6e52dcf32fdec2'
+            '9788331168223850709fc3c6cda9c9ab4563ff0ee4e58b992d7c2d24e02bb695'
+            '4f6f36d91e4363f37d9b72b506198658619550a93ec07f122a26d009846e3a7f'
             '31c5556be4cdd9bf52bb55f18ead0c68a4f0e793c2c2dab0a2a2c6d92407d0d4'
             'dbc8a4fc569d4cd7bcd45516ccc98c1396fce0682c262103069c8f5150538cdb')
 
