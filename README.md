@@ -1,6 +1,6 @@
 # murx
 
-<img src="murx.png" alt="murx logo" width="512">
+![murx](murx.png)
 
 A deliberately small terminal multiplexer. One C file, no config file, no
 dependencies.
