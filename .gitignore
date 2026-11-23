@@ -4,12 +4,12 @@
 src/
 
 # Packages
-/alpine/*
-!/alpine/APKBUILD
-!/alpine/README.md
-/arch/*
-!/arch/PKGBUILD
-!/arch/README.md
+/os/alpine/*
+!/os/alpine/APKBUILD
+!/os/alpine/README.md
+/os/arch/*
+!/os/arch/PKGBUILD
+!/os/arch/README.md
 *.apk
 *.xz
 
@@ -29,15 +29,16 @@ compile_commands.json
 .cache/
 
 # Debian build outputs
-/debian/.debhelper/
-/debian/debhelper-build-stamp
-/debian/files
-/debian/murx/
-/debian/*.debhelper.log
-/debian/*.substvars
+/debian
+/os/debian/.debhelper/
+/os/debian/debhelper-build-stamp
+/os/debian/files
+/os/debian/murx/
+/os/debian/*.debhelper.log
+/os/debian/*.substvars
 
 # FreeBSD port build outputs
-/freebsd/sysutils/murx/work/
+/os/freebsd/sysutils/murx/work/
 
 # OpenBSD port build outputs
-/openbsd/sysutils/murx/w-*/
+/os/openbsd/sysutils/murx/w-*/

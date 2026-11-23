@@ -445,12 +445,12 @@ that otherwise collapses pane grids to 1x1.
 
 ## Packages
 
-- [Alpine Linux](alpine/README.md)
-- [Arch Linux](arch/README.md)
-- [Debian](debian/README.md)
-- [Gentoo](gentoo/README.md)
-- [FreeBSD](freebsd/README.md)
-- [OpenBSD](openbsd/README.md)
+- [Alpine Linux](os/alpine/README.md)
+- [Arch Linux](os/arch/README.md)
+- [Debian](os/debian/README.md)
+- [Gentoo](os/gentoo/README.md)
+- [FreeBSD](os/freebsd/README.md)
+- [OpenBSD](os/openbsd/README.md)
 
 The Alpine and Arch recipes build from the local checkout. After changing
 packaged source files, run `make pkgsums` to sync their versions with

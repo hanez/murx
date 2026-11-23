@@ -8,7 +8,7 @@ make pkgarch
 ```
 
 The target prepares local sources for [PKGBUILD](PKGBUILD), updates their
-checksums, and runs `makepkg`. The package is written to `arch/` unless you
+checksums, and runs `makepkg`. The package is written to `os/arch/` unless you
 configured a different `PKGDEST`. Install it with `pacman -U` and the package
 path.
 
@@ -16,7 +16,7 @@ To build and install in one step, run these commands from the checkout root:
 
 ```sh
 make pkgsources
-cd arch
+cd os/arch
 updpkgsums
 makepkg -si
 ```

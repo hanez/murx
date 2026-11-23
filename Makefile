@@ -28,28 +28,36 @@ clean:
 	rm -f murx
 
 pkgclean:
-	rm -f *.apk alpine/*.apk
-	rm -f *.xz arch/*.pkg.tar.*
+	rm -f *.apk os/alpine/*.apk
+	rm -f *.xz os/arch/*.pkg.tar.*
 
 pkgsources:
-	@for dir in alpine arch; do \
+	@for dir in os/alpine os/arch; do \
 	    for source in murx.c Makefile murx.1 LICENSE AUTHORS; do \
 	        if [ ! -e "$$dir/$$source" ] && [ ! -L "$$dir/$$source" ]; then \
-	            ln -s "../$$source" "$$dir/$$source" || exit 1; \
+	            ln -s "../../$$source" "$$dir/$$source" || exit 1; \
 	        fi; \
 	    done; \
 	    if [ ! -e "$$dir/MURX-README.md" ] && [ ! -L "$$dir/MURX-README.md" ]; then \
-	        ln -s ../README.md "$$dir/MURX-README.md" || exit 1; \
+	        ln -s ../../README.md "$$dir/MURX-README.md" || exit 1; \
 	    fi; \
 	done
 
 pkgalpine: pkgclean pkgsources
-	cd alpine && abuild checksum
-	cd alpine && abuild -r
+	cd os/alpine && abuild checksum
+	cd os/alpine && abuild -r
 
 pkgarch: pkgclean pkgsources
-	cd arch && updpkgsums
-	cd arch && makepkg
+	cd os/arch && updpkgsums
+	cd os/arch && makepkg
+
+pkgdebian:
+	@if [ -e debian ] || [ -L debian ]; then \
+	    echo "debian already exists at the repository root" >&2; exit 1; \
+	fi; \
+	ln -s os/debian debian || exit 1; \
+	trap 'unlink debian' 0; \
+	dpkg-buildpackage -b -us -uc
 
 pkgsums: pkgsources
 	@version=$$(sed -n 's/^#define MURX_VERSION "\([^"]*\)"$$/\1/p' murx.c); \
@@ -58,11 +66,11 @@ pkgsums: pkgsources
 	fi; \
 	tmp=$$(mktemp .pkgsums.XXXXXX) || exit 1; \
 	trap 'rm -f "$$tmp"' 0; \
-	for recipe in alpine/APKBUILD arch/PKGBUILD; do \
+	for recipe in os/alpine/APKBUILD os/arch/PKGBUILD; do \
 	    sed "s/^pkgver=.*/pkgver=$$version/" "$$recipe" > "$$tmp" && \
 	        cat "$$tmp" > "$$recipe" || exit 1; \
 	done
-	cd alpine && abuild checksum
-	cd arch && updpkgsums
+	cd os/alpine && abuild checksum
+	cd os/arch && updpkgsums
 
-.PHONY: all install uninstall clean pkgclean pkgsources pkgalpine pkgarch pkgsums
+.PHONY: all install uninstall clean pkgclean pkgsources pkgalpine pkgarch pkgdebian pkgsums

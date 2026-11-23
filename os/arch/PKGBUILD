@@ -9,9 +9,9 @@ license=('Apache-2.0')
 depends=('glibc')
 source=('murx.c' 'Makefile' 'murx.1' 'MURX-README.md' 'LICENSE' 'AUTHORS')
 sha256sums=('358d39eed410a9657ef811892288ef407fe8f17709cb1b4b5e0405635594b70d'
-            '7fee28fdd2016230d02cc7fee8a4cc759083d8dbe3d82b42a7353f883dd1774c'
+            '78a9c19c212e8038422e1bb4bb96d9b25eb19ad1359489cd32edf9e1a76638b2'
             '953966bfdd0b49cb26c11220e1e2bf6b5862aaa1b2d0bf002cde9d276f0ae96b'
-            'e2056cacb32df2fd2e49990d0db5900e777128792a55f382565b5b50da160b94'
+            '1a9c479723f74cdc3a2af6cf7a4ad52388681b11a5ba3f4cfb73d28af631e036'
             '31c5556be4cdd9bf52bb55f18ead0c68a4f0e793c2c2dab0a2a2c6d92407d0d4'
             'dbc8a4fc569d4cd7bcd45516ccc98c1396fce0682c262103069c8f5150538cdb')
 
