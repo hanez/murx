@@ -52,7 +52,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -385,7 +384,6 @@ static int send_msg(int fd, uint32_t type, const void *data, size_t len);
 
 #define DEFAULT_COLOR (-1)
 #define RGB_FLAG 0x01000000
-#define INDEXED_COLOR_FLAG 0x02000000
 #define WIDE_CONT 0xFFFFFFFFu
 
 #define MAX_DIMENSION 1000    /* resource policy, not a C type limit */
@@ -4377,11 +4375,7 @@ static void handle_message(Client *c, Session *s, uint32_t type, const unsigned 
             if (status > 2) { c->dead = 1; return; }
             uint32_t color = 0;
             if (len >= 24) memcpy(&color, data + 20, 4);
-            if (color && (color & 0xff000000u) != RGB_FLAG &&
-                (color & ~0xffu) != INDEXED_COLOR_FLAG) {
-                c->dead = 1;
-                return;
-            }
+            if (color && (color >> 24) != 1) { c->dead = 1; return; }
             if (color) s->status_bg = (int32_t)color;
             if (status) {
                 s->status_bottom = status == 2;
@@ -5236,7 +5230,7 @@ static void print_help(FILE *out) {
     help_row(out, "-l, --list-sessions", "list running sessions without attaching");
     help_row(out, "-p, --prefix LETTER", "client prefix Ctrl-LETTER (a-z, default: a)");
     help_row(out, "-s, --status POSITION", "status line: top or bottom (new sessions: top)");
-    help_row(out, "-c, --color COLOR", "status bar background: xterm name or RRGGBB");
+    help_row(out, "-c, --color RRGGBB", "status bar background, six hex digits (e.g. 000000)");
     char history_help[96];
     snprintf(history_help, sizeof history_help,
              "history lines per pane in new sessions (0-%d, default: %d)",
@@ -5249,7 +5243,6 @@ static void print_help(FILE *out) {
     help_row(out, "-t, --titles", "show the title row above each pane (default: off)");
 
     fputs("\n"
-          "For repeated xterm names, add :INDEX (e.g. Blue3:20).\n"
           "Without -s or -c, an existing session keeps its position and color.\n"
           "Display options set new session values and can be changed later from\n"
           "the Configuration menu.\n"
@@ -5306,301 +5299,6 @@ static int parse_prefix(const char *text, unsigned char *prefix) {
     return 1;
 }
 
-static const char *const xterm_color_names[] = {
-    [C_BLACK] = "Black",
-    [C_MAROON] = "Maroon",
-    [C_DGREEN] = "Green",
-    [C_OLIVE] = "Olive",
-    [C_NAVY] = "Navy",
-    [C_PURPLE] = "Purple",
-    [C_CYAN] = "Teal",
-    [C_WHITE] = "Silver",
-    [C_GREY] = "Grey",
-    [C_RED] = "Red",
-    [C_GREEN] = "Lime",
-    [C_YELLOW] = "Yellow",
-    [C_BLUE] = "Blue",
-    [C_MAGENTA] = "Fuchsia",
-    [C_CYAN2] = "Aqua",
-    [C_BWHITE] = "White",
-    [C_GREY_0] = "Grey0",
-    [C_NAVY_BLUE] = "NavyBlue",
-    [C_DARK_BLUE] = "DarkBlue",
-    [C_BLUE_3_19] = "Blue3",
-    [C_BLUE_3_20] = "Blue3",
-    [C_BLUE_1] = "Blue1",
-    [C_DARK_GREEN] = "DarkGreen",
-    [C_DEEP_SKY_BLUE_4_23] = "DeepSkyBlue4",
-    [C_DEEP_SKY_BLUE_4_24] = "DeepSkyBlue4",
-    [C_DEEP_SKY_BLUE_4_25] = "DeepSkyBlue4",
-    [C_DODGER_BLUE_3] = "DodgerBlue3",
-    [C_DODGER_BLUE_2] = "DodgerBlue2",
-    [C_GREEN_4] = "Green4",
-    [C_SPRING_GREEN_4] = "SpringGreen4",
-    [C_TURQUOISE_4] = "Turquoise4",
-    [C_DEEP_SKY_BLUE_3_31] = "DeepSkyBlue3",
-    [C_DEEP_SKY_BLUE_3_32] = "DeepSkyBlue3",
-    [C_DODGER_BLUE_1] = "DodgerBlue1",
-    [C_GREEN_3_34] = "Green3",
-    [C_SPRING_GREEN_3_35] = "SpringGreen3",
-    [C_DARK_CYAN] = "DarkCyan",
-    [C_LIGHT_SEA_GREEN] = "LightSeaGreen",
-    [C_DEEP_SKY_BLUE_2] = "DeepSkyBlue2",
-    [C_DEEP_SKY_BLUE_1] = "DeepSkyBlue1",
-    [C_GREEN_3_40] = "Green3",
-    [C_SPRING_GREEN_3_41] = "SpringGreen3",
-    [C_SPRING_GREEN_2_42] = "SpringGreen2",
-    [C_CYAN_3] = "Cyan3",
-    [C_DARK_TURQUOISE] = "DarkTurquoise",
-    [C_TURQUOISE_2] = "Turquoise2",
-    [C_GREEN_1] = "Green1",
-    [C_SPRING_GREEN_2_47] = "SpringGreen2",
-    [C_SPRING_GREEN_1] = "SpringGreen1",
-    [C_MEDIUM_SPRING_GREEN] = "MediumSpringGreen",
-    [C_CYAN_2] = "Cyan2",
-    [C_CYAN_1] = "Cyan1",
-    [C_DARK_RED_52] = "DarkRed",
-    [C_DEEP_PINK_4_53] = "DeepPink4",
-    [C_PURPLE_4_54] = "Purple4",
-    [C_PURPLE_4_55] = "Purple4",
-    [C_PURPLE_3] = "Purple3",
-    [C_BLUE_VIOLET] = "BlueViolet",
-    [C_ORANGE_4_58] = "Orange4",
-    [C_GREY_37] = "Grey37",
-    [C_MEDIUM_PURPLE_4] = "MediumPurple4",
-    [C_SLATE_BLUE_3_61] = "SlateBlue3",
-    [C_SLATE_BLUE_3_62] = "SlateBlue3",
-    [C_ROYAL_BLUE_1] = "RoyalBlue1",
-    [C_CHARTREUSE_4] = "Chartreuse4",
-    [C_DARK_SEA_GREEN_4_65] = "DarkSeaGreen4",
-    [C_PALE_TURQUOISE_4] = "PaleTurquoise4",
-    [C_STEEL_BLUE] = "SteelBlue",
-    [C_STEEL_BLUE_3] = "SteelBlue3",
-    [C_CORNFLOWER_BLUE] = "CornflowerBlue",
-    [C_CHARTREUSE_3_70] = "Chartreuse3",
-    [C_DARK_SEA_GREEN_4_71] = "DarkSeaGreen4",
-    [C_CADET_BLUE_72] = "CadetBlue",
-    [C_CADET_BLUE_73] = "CadetBlue",
-    [C_SKY_BLUE_3] = "SkyBlue3",
-    [C_STEEL_BLUE_1_75] = "SteelBlue1",
-    [C_CHARTREUSE_3_76] = "Chartreuse3",
-    [C_PALE_GREEN_3_77] = "PaleGreen3",
-    [C_SEA_GREEN_3] = "SeaGreen3",
-    [C_AQUAMARINE_3] = "Aquamarine3",
-    [C_MEDIUM_TURQUOISE] = "MediumTurquoise",
-    [C_STEEL_BLUE_1_81] = "SteelBlue1",
-    [C_CHARTREUSE_2_82] = "Chartreuse2",
-    [C_SEA_GREEN_2] = "SeaGreen2",
-    [C_SEA_GREEN_1_84] = "SeaGreen1",
-    [C_SEA_GREEN_1_85] = "SeaGreen1",
-    [C_AQUAMARINE_1_86] = "Aquamarine1",
-    [C_DARK_SLATE_GRAY_2] = "DarkSlateGray2",
-    [C_DARK_RED_88] = "DarkRed",
-    [C_DEEP_PINK_4_89] = "DeepPink4",
-    [C_DARK_MAGENTA_90] = "DarkMagenta",
-    [C_DARK_MAGENTA_91] = "DarkMagenta",
-    [C_DARK_VIOLET_92] = "DarkViolet",
-    [C_PURPLE_93] = "Purple",
-    [C_ORANGE_4_94] = "Orange4",
-    [C_LIGHT_PINK_4] = "LightPink4",
-    [C_PLUM_4] = "Plum4",
-    [C_MEDIUM_PURPLE_3_97] = "MediumPurple3",
-    [C_MEDIUM_PURPLE_3_98] = "MediumPurple3",
-    [C_SLATE_BLUE_1] = "SlateBlue1",
-    [C_YELLOW_4_100] = "Yellow4",
-    [C_WHEAT_4] = "Wheat4",
-    [C_GREY_53] = "Grey53",
-    [C_LIGHT_SLATE_GREY] = "LightSlateGrey",
-    [C_MEDIUM_PURPLE] = "MediumPurple",
-    [C_LIGHT_SLATE_BLUE] = "LightSlateBlue",
-    [C_YELLOW_4_106] = "Yellow4",
-    [C_DARK_OLIVE_GREEN_3_107] = "DarkOliveGreen3",
-    [C_DARK_SEA_GREEN] = "DarkSeaGreen",
-    [C_LIGHT_SKY_BLUE_3_109] = "LightSkyBlue3",
-    [C_LIGHT_SKY_BLUE_3_110] = "LightSkyBlue3",
-    [C_SKY_BLUE_2] = "SkyBlue2",
-    [C_CHARTREUSE_2_112] = "Chartreuse2",
-    [C_DARK_OLIVE_GREEN_3_113] = "DarkOliveGreen3",
-    [C_PALE_GREEN_3_114] = "PaleGreen3",
-    [C_DARK_SEA_GREEN_3_115] = "DarkSeaGreen3",
-    [C_DARK_SLATE_GRAY_3] = "DarkSlateGray3",
-    [C_SKY_BLUE_1] = "SkyBlue1",
-    [C_CHARTREUSE_1] = "Chartreuse1",
-    [C_LIGHT_GREEN_119] = "LightGreen",
-    [C_LIGHT_GREEN_120] = "LightGreen",
-    [C_PALE_GREEN_1_121] = "PaleGreen1",
-    [C_AQUAMARINE_1_122] = "Aquamarine1",
-    [C_DARK_SLATE_GRAY_1] = "DarkSlateGray1",
-    [C_RED_3_124] = "Red3",
-    [C_DEEP_PINK_4_125] = "DeepPink4",
-    [C_MEDIUM_VIOLET_RED] = "MediumVioletRed",
-    [C_MAGENTA_3_127] = "Magenta3",
-    [C_DARK_VIOLET_128] = "DarkViolet",
-    [C_PURPLE_129] = "Purple",
-    [C_DARK_ORANGE_3_130] = "DarkOrange3",
-    [C_INDIAN_RED_131] = "IndianRed",
-    [C_HOT_PINK_3_132] = "HotPink3",
-    [C_MEDIUM_ORCHID_3] = "MediumOrchid3",
-    [C_MEDIUM_ORCHID] = "MediumOrchid",
-    [C_MEDIUM_PURPLE_2_135] = "MediumPurple2",
-    [C_DARK_GOLDENROD] = "DarkGoldenrod",
-    [C_LIGHT_SALMON_3_137] = "LightSalmon3",
-    [C_ROSY_BROWN] = "RosyBrown",
-    [C_GREY_63] = "Grey63",
-    [C_MEDIUM_PURPLE_2_140] = "MediumPurple2",
-    [C_MEDIUM_PURPLE_1] = "MediumPurple1",
-    [C_GOLD_3_142] = "Gold3",
-    [C_DARK_KHAKI] = "DarkKhaki",
-    [C_NAVAJO_WHITE_3] = "NavajoWhite3",
-    [C_GREY_69] = "Grey69",
-    [C_LIGHT_STEEL_BLUE_3] = "LightSteelBlue3",
-    [C_LIGHT_STEEL_BLUE] = "LightSteelBlue",
-    [C_YELLOW_3_148] = "Yellow3",
-    [C_DARK_OLIVE_GREEN_3_149] = "DarkOliveGreen3",
-    [C_DARK_SEA_GREEN_3_150] = "DarkSeaGreen3",
-    [C_DARK_SEA_GREEN_2_151] = "DarkSeaGreen2",
-    [C_LIGHT_CYAN_3] = "LightCyan3",
-    [C_LIGHT_SKY_BLUE_1] = "LightSkyBlue1",
-    [C_GREEN_YELLOW] = "GreenYellow",
-    [C_DARK_OLIVE_GREEN_2] = "DarkOliveGreen2",
-    [C_PALE_GREEN_1_156] = "PaleGreen1",
-    [C_DARK_SEA_GREEN_2_157] = "DarkSeaGreen2",
-    [C_DARK_SEA_GREEN_1_158] = "DarkSeaGreen1",
-    [C_PALE_TURQUOISE_1] = "PaleTurquoise1",
-    [C_RED_3_160] = "Red3",
-    [C_DEEP_PINK_3_161] = "DeepPink3",
-    [C_DEEP_PINK_3_162] = "DeepPink3",
-    [C_MAGENTA_3_163] = "Magenta3",
-    [C_MAGENTA_3_164] = "Magenta3",
-    [C_MAGENTA_2_165] = "Magenta2",
-    [C_DARK_ORANGE_3_166] = "DarkOrange3",
-    [C_INDIAN_RED_167] = "IndianRed",
-    [C_HOT_PINK_3_168] = "HotPink3",
-    [C_HOT_PINK_2] = "HotPink2",
-    [C_ORCHID] = "Orchid",
-    [C_MEDIUM_ORCHID_1_171] = "MediumOrchid1",
-    [C_ORANGE_3] = "Orange3",
-    [C_LIGHT_SALMON_3_173] = "LightSalmon3",
-    [C_LIGHT_PINK_3] = "LightPink3",
-    [C_PINK_3] = "Pink3",
-    [C_PLUM_3] = "Plum3",
-    [C_VIOLET] = "Violet",
-    [C_GOLD_3_178] = "Gold3",
-    [C_LIGHT_GOLDENROD_3] = "LightGoldenrod3",
-    [C_TAN] = "Tan",
-    [C_MISTY_ROSE_3] = "MistyRose3",
-    [C_THISTLE_3] = "Thistle3",
-    [C_PLUM_2] = "Plum2",
-    [C_YELLOW_3_184] = "Yellow3",
-    [C_KHAKI_3] = "Khaki3",
-    [C_LIGHT_GOLDENROD_2_186] = "LightGoldenrod2",
-    [C_LIGHT_YELLOW_3] = "LightYellow3",
-    [C_GREY_84] = "Grey84",
-    [C_LIGHT_STEEL_BLUE_1] = "LightSteelBlue1",
-    [C_YELLOW_2] = "Yellow2",
-    [C_DARK_OLIVE_GREEN_1_191] = "DarkOliveGreen1",
-    [C_DARK_OLIVE_GREEN_1_192] = "DarkOliveGreen1",
-    [C_DARK_SEA_GREEN_1_193] = "DarkSeaGreen1",
-    [C_HONEYDEW_2] = "Honeydew2",
-    [C_LIGHT_CYAN_1] = "LightCyan1",
-    [C_RED_1] = "Red1",
-    [C_DEEP_PINK_2] = "DeepPink2",
-    [C_DEEP_PINK_1_198] = "DeepPink1",
-    [C_DEEP_PINK_1_199] = "DeepPink1",
-    [C_MAGENTA_2_200] = "Magenta2",
-    [C_MAGENTA_1] = "Magenta1",
-    [C_ORANGE_RED_1] = "OrangeRed1",
-    [C_INDIAN_RED_1_203] = "IndianRed1",
-    [C_INDIAN_RED_1_204] = "IndianRed1",
-    [C_HOT_PINK_205] = "HotPink",
-    [C_HOT_PINK_206] = "HotPink",
-    [C_MEDIUM_ORCHID_1_207] = "MediumOrchid1",
-    [C_DARK_ORANGE] = "DarkOrange",
-    [C_SALMON_1] = "Salmon1",
-    [C_LIGHT_CORAL] = "LightCoral",
-    [C_PALE_VIOLET_RED_1] = "PaleVioletRed1",
-    [C_ORCHID_2] = "Orchid2",
-    [C_ORCHID_1] = "Orchid1",
-    [C_ORANGE_1] = "Orange1",
-    [C_SANDY_BROWN] = "SandyBrown",
-    [C_LIGHT_SALMON_1] = "LightSalmon1",
-    [C_LIGHT_PINK_1] = "LightPink1",
-    [C_PINK_1] = "Pink1",
-    [C_PLUM_1] = "Plum1",
-    [C_GOLD_1] = "Gold1",
-    [C_LIGHT_GOLDENROD_2_221] = "LightGoldenrod2",
-    [C_LIGHT_GOLDENROD_2_222] = "LightGoldenrod2",
-    [C_NAVAJO_WHITE_1] = "NavajoWhite1",
-    [C_MISTY_ROSE_1] = "MistyRose1",
-    [C_THISTLE_1] = "Thistle1",
-    [C_YELLOW_1] = "Yellow1",
-    [C_LIGHT_GOLDENROD_1] = "LightGoldenrod1",
-    [C_KHAKI_1] = "Khaki1",
-    [C_WHEAT_1] = "Wheat1",
-    [C_CORNSILK_1] = "Cornsilk1",
-    [C_GREY_100] = "Grey100",
-    [C_GREY_3] = "Grey3",
-    [C_GREY_7] = "Grey7",
-    [C_GREY_11] = "Grey11",
-    [C_GREY_15] = "Grey15",
-    [C_GREY_19] = "Grey19",
-    [C_GREY_23] = "Grey23",
-    [C_GREY_27] = "Grey27",
-    [C_GREY_30] = "Grey30",
-    [C_GREY_35] = "Grey35",
-    [C_GREY_39] = "Grey39",
-    [C_GREY_42] = "Grey42",
-    [C_GREY_46] = "Grey46",
-    [C_GREY_50] = "Grey50",
-    [C_GREY_54] = "Grey54",
-    [C_GREY_58] = "Grey58",
-    [C_GREY_62] = "Grey62",
-    [C_GREY_66] = "Grey66",
-    [C_GREY_70] = "Grey70",
-    [C_GREY_74] = "Grey74",
-    [C_GREY_78] = "Grey78",
-    [C_GREY_82] = "Grey82",
-    [C_GREY_85] = "Grey85",
-    [C_GREY_89] = "Grey89",
-    [C_GREY_93] = "Grey93",
-};
-
-static int parse_color(const char *text, uint32_t *color) {
-    if (strlen(text) == 6 && strspn(text, "0123456789abcdefABCDEF") == 6) {
-        *color = RGB_FLAG | (uint32_t)strtoul(text, NULL, 16);
-        return 1;
-    }
-
-    char name[32];
-    size_t len = 0;
-    while (*text && *text != ':') {
-        unsigned char ch = (unsigned char)*text++;
-        if (ch == ' ' || ch == '_' || ch == '-') continue;
-        if (len == sizeof(name) - 1) return 0;
-        name[len++] = (char)ch;
-    }
-    name[len] = '\0';
-
-    size_t first = 0;
-    size_t end = sizeof(xterm_color_names) / sizeof(xterm_color_names[0]);
-    if (*text == ':') {
-        char *tail;
-        if (*++text < '0' || *text > '9') return 0;
-        unsigned long index = strtoul(text, &tail, 10);
-        if (*tail || index >= end) return 0;
-        first = index;
-        end = first + 1;
-    }
-
-    for (size_t index = first; index < end; index++) {
-        if (strcasecmp(name, xterm_color_names[index]) == 0) {
-            *color = INDEXED_COLOR_FLAG | (uint32_t)index;
-            return 1;
-        }
-    }
-    return 0;
-}
-
 int main(int argc, char **argv) {
     setlocale(LC_CTYPE, "");
 
@@ -5652,12 +5350,12 @@ int main(int argc, char **argv) {
             }
             argi++;
         } else if (strcmp(option, "-c") == 0 || strcmp(option, "--color") == 0) {
-            if (argi >= argc || !parse_color(argv[argi], &color)) {
-                fprintf(stderr, "murx: %s requires an xterm color name or six hexadecimal digits (RRGGBB)\n",
-                        option);
+            if (argi >= argc || strlen(argv[argi]) != 6 ||
+                strspn(argv[argi], "0123456789abcdefABCDEF") != 6) {
+                fprintf(stderr, "murx: %s requires six hexadecimal digits (RRGGBB)\n", option);
                 return 2;
             }
-            argi++;
+            color = RGB_FLAG | (uint32_t)strtoul(argv[argi++], NULL, 16);
         } else if (strcmp(option, "-s") == 0 || strcmp(option, "--status") == 0) {
             if (argi >= argc || (strcmp(argv[argi], "top") != 0 &&
                                  strcmp(argv[argi], "bottom") != 0)) {
