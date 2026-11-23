@@ -8,8 +8,8 @@ dependencies.
 ```sh
 make
 ./murx                          # session "0"
-./murx work                     # separate named session
-./murx 1                        # separate numbered session
+./murx work                     # separate/attache named session
+./murx 1                        # separate/attache numbered session
 ./murx -p x work                # use Ctrl-X as this client's prefix
 ./murx --prefix x work          # same as -p x
 ./murx -s bottom work           # show the session status line at the bottom
