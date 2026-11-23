@@ -16,13 +16,13 @@ make
 ./murx --status bottom work     # same as -s bottom
 ./murx -d work                  # --cwd, show the current directory in the status bar
 ./murx -m work                  # --murx, show [murx] on the left of the status bar
-./murx -c 191a1c work           # use a grey status bar background
+./murx -c 191a1c work           # --color, use a grey status bar background
 ./murx -H 10000 work            # --history, keep up to 10,000 history lines per pane
 ./murx -C work                  # --clock, show the status bar clock
 ./murx -n work                  # --hostname, show the hostname: prefix in window titles
 ./murx -t work                  # --titles, show a title row above each pane
 ./murx -l                       # --list-sessions, list running sessions without attaching
-./murx -h                       # --help, logo, version, usage and shortcuts
+./murx -h                       # --help, usage and shortcuts
 ./murx -v                       # --version, print the version and exit
 ```
 
