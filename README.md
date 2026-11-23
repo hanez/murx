@@ -1,5 +1,7 @@
 # murx
 
+<img src="murx.png" alt="murx logo" width="512">
+
 A deliberately small terminal multiplexer. One C file, no config file, no
 dependencies.
 
