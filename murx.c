@@ -530,7 +530,10 @@ static int utf8_decode(const unsigned char *s, size_t n, uint32_t *cp) {
 static int cp_width(uint32_t cp) {
     int w;
     if (cp == 0 || cp == WIDE_CONT) return 1;
-    if (!unicode_scalar(cp) || (uintmax_t)cp > (uintmax_t)WCHAR_MAX) return 1;
+    if (!unicode_scalar(cp)) return 1;
+#if WCHAR_MAX < 0x10FFFF
+    if (cp > WCHAR_MAX) return 1;
+#endif
     w = wcwidth((wchar_t)cp);
     if (w < 0) return 1;
     return w;
