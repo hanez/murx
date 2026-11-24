@@ -12,6 +12,8 @@ murx \- small persistent terminal multiplexer
 .RB [ \-m ]
 .RB [ \-n ]
 .RB [ \-t ]
+.RB [ \-\-resize\-on\-input ]
+.RB [ \-\-adopt ]
 .RB [ \-\- ]
 .RI [ session ]
 .br
@@ -95,6 +97,27 @@ Show the hostname: prefix in window names and the outer terminal title.
 .BR \-t ", " \-\-titles
 Show the title row above each pane. Pane titles are off by default.
 .TP
+.B \-\-resize\-on\-input
+Make the session size follow the client that most recently sent input.
+Any bytes from a client count, including keystrokes, menu navigation and
+scrollback commands. Attaching and resizing are used only until the first
+input arrives. This changes the running session for all attached clients.
+.TP
+.B \-\-adopt
+Ask a running server to hand its session to a newly started server process.
+The session name is optional, so both
+.B murx \-\-adopt
+and
+.B murx \-\-adopt session
+work; without a name the default session 0 is used. Panes, client connections,
+window layout, screens and scrollback survive the swap. Attached clients see a
+short
+.I Session adopted by new murx server
+notification. If no session is running, a new one is started normally.
+Handoff requires a cooperating server: sessions started by this version or a
+later one can be adopted after an upgrade. Against an older server, murx
+prints a clear message and attaches normally.
+.TP
 .BR \-h ", " \-\-help
 Print the text logo, program version, usage and keyboard shortcuts, then exit.
 .TP
@@ -103,7 +126,9 @@ Print the program version and exit.
 .PP
 Display options set a new session's values; the Configuration menu can
 change them in a running session. The cwd, clock, [murx] label, hostname
-and pane title options are off by default.
+and pane title options are off by default. The default size mode uses
+attach/resize recency; omitting \-\-resize\-on\-input preserves the running
+session's mode.
 To restore the previous default display, use
 .BR "murx \-\-cwd \-\-clock \-\-hostname session" .
 .SH KEY BINDINGS
@@ -227,10 +252,11 @@ Use Up/Down or j/k to move and Enter to select. Left/Right or h/l enter and
 leave submenus; q, Escape, or Ctrl-C closes the menu. Long menus scroll.
 The Configuration submenu sets the status line position and background
 (default, black or grey), the client prefix, display toggles for the directory,
-clock, [murx] label and hostname, and resets display/status defaults (display toggles, status position and
-background). Session
-settings affect all attached clients; the prefix is per-client. Changes take
-effect immediately and are not saved to disk.
+clock, [murx] label, hostname and pane titles, a toggle for resizing to the
+last client with input, and resets display/status defaults (display toggles,
+status position and background). Session settings affect all attached clients;
+the prefix is per-client. Changes take effect immediately and are not saved to
+disk.
 In prompts use Enter to accept, Escape or Ctrl-C to cancel, Backspace or Ctrl-H
 to delete, and Ctrl-U to clear.
 Confirm destructive actions with y, Y or Enter; n, N, Escape or Ctrl-C cancels.
@@ -301,9 +327,11 @@ are passed through as 24-bit SGR when COLORTERM is truecolor or 24bit and TERM
 does not start with screen, tmux, linux, or dumb; otherwise RGB is mapped to
 the nearest xterm-256 entry.
 .SH SESSION SIZE
-The most recently attached or resized client determines the session size,
-clamped to a minimum of 20 columns by 5 rows and a maximum of 1,000 by 1,000.
-Larger clients center the session; smaller clients show its top-left portion.
+By default, the most recently attached or resized client determines the session
+size, clamped to a minimum of 20 columns by 5 rows and a maximum of 1,000 by
+1,000. With the \-\-resize\-on\-input option or the Configuration menu toggle,
+the client that most recently sent input determines the size instead;
+attaching and resizing are only used before any client has sent input.
 Ctrl-A R forces the session to the current client's terminal size.
 Ctrl-A * lists attached clients for size diagnostics.
 .PP
@@ -317,7 +345,9 @@ assume --hostname is enabled.
 SSH does not expose remote foreground programs or working directories locally.
 Configure the remote shell to send terminal reports using one of the examples
 below. Reload the shell configuration or open a new SSH shell afterward.
-Restart session servers after upgrading murx to gain newly added features.
+Sessions started by a handoff-capable build can move to a new binary with
+.BR "murx \-\-adopt [" session "]";
+older session servers still need a restart after upgrading.
 .PP
 OSC 0 or OSC 2 titles of the form hostname:program update the SSH window name.
 Use a hostname containing only letters, digits, dots, underscores or hyphens,

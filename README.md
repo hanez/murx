@@ -24,6 +24,9 @@ make
 ./murx -l                       # --list-sessions, list running sessions without attaching
 ./murx -h                       # --help, usage and shortcuts
 ./murx -v                       # --version, print the version and exit
+./murx --resize-on-input work   # session size follows the last client with input
+./murx --adopt                  # hand the default session to a new server binary
+./murx --adopt work             # same for a named session
 ```
 
 Detach with `Ctrl-A d`. Run `murx` again to reattach.
@@ -77,13 +80,35 @@ can change them in a running session (see [Menu](#menu)). To restore the
 previous default display, use
 `murx --cwd --clock --hostname session`.
 
+By default, the most recently attached or resized client sets the session size.
+Use `--resize-on-input` (or the `Resize to last input` toggle in the
+Configuration menu) to make any input from a client — a keystroke, menu
+navigation, or a scrollback command — make that client the size source instead.
+The menu toggle turns it off again. Both change the running session for all
+attached clients; omitting the option preserves its current mode.
+
+`--adopt` asks a running server to hand its session to a freshly started server
+process, so an upgraded binary can take over without killing panes or
+disconnecting clients. It accepts a session name, or no argument at all for the
+default session: `murx --adopt` and `murx --adopt work` both work. Attached
+clients keep their connections and see a short `Session adopted by new murx
+server` notification. If no session is running, `--adopt` simply starts one.
+
+Handoff requires cooperation from the server that is already running. Sessions
+started by this version (or a later one) can be adopted after an upgrade.
+Against an older server, `--adopt` prints a clear message and attaches normally;
+those sessions still need one restart. The handoff carries the listening socket,
+pty descriptors, client sockets, window layout, pane screens and scrollback, so
+shells keep their process IDs and panes keep their contents.
+
 ## Upgrading from moerx
 
 The executable, source and manual are now `murx`, `murx.c` and `murx.1`.
 Update aliases and scripts to use `murx`. The status label is now disabled
 by default; use `--murx` to enable it. Sessions use a separate `murx-<uid>` socket directory; finish
-existing sessions with the old executable before removing it. Existing
-sessions are not migrated automatically. Replace the optional remote SSH
+existing sessions with the old executable before removing it. Sessions started
+by a handoff-capable build can be moved forward with `--adopt`; older ones are
+not migrated automatically. Replace the optional remote SSH
 hooks below and reload the remote shell: custom reports now use `murx-cwd`
 and `murx-root`.
 
@@ -100,10 +125,12 @@ and `murx-root`.
   works in programs such as Midnight Commander. Menus and prompts use normal
   cursor-key mode; detaching restores normal cursor keys in the outer terminal.
 - Home (Pos1) and End use the pane’s `screen-256color` key sequences.
-- Multiple clients can attach to the same session. The most recently attached
-  or resized client sets the session size; a larger client shows the session
-  centred in its terminal, while a smaller client shows the top-left part.
-  `Ctrl-A R` forces the session back to the current client's terminal size.
+- Multiple clients can attach to the same session. Normally the most recently
+  attached or resized client sets the session size. With `--resize-on-input`,
+  the client that most recently sent any input does instead. A larger client
+  shows the session centred in its terminal, while a smaller client shows the
+  top-left part. `Ctrl-A R` forces the session back to the current client's
+  terminal size.
 - Panes run `$SHELL` as a login shell with `TERM=screen-256color` and
   `MURX=<session>`. They inherit the launching process's umask, so builds keep
   their usual file permissions. After upgrading from a version that forced `077`,
@@ -324,8 +351,8 @@ scrollback, forced resize and kill server. `Configuration...` contains:
 - `Status line...` — position (top/bottom) and background (default, black
   `000000`, grey `191a1c`).
 - `Prefix...` — this client's Ctrl-key prefix, `a` through `z`.
-- Toggles for the current directory, clock, `[murx]` label, hostname and pane
-  titles.
+- Toggles for the current directory, clock, `[murx]` label, hostname, pane
+  titles and `Resize to last input`.
 - `Reset display/status defaults`.
 
 Press Enter on a toggle to turn it on or off. Settings changes apply

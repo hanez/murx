@@ -56,6 +56,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -91,9 +92,12 @@
 #define DEFAULT_PREFIX 0x01
 
 /* client -> server */
-enum { C_ATTACH = 1, C_INPUT = 2, C_RESIZE = 3 };
+enum { C_ATTACH = 1, C_INPUT = 2, C_RESIZE = 3, C_ADOPT = 6 };
 /* server -> client */
-enum { S_DRAW = 4, S_DETACH = 5 };
+enum { S_DRAW = 4, S_DETACH = 5, S_HANDOFF = 7 };
+
+/* C_ATTACH session-size mode: 0 preserves the running session's setting. */
+enum { SIZE_MODE_KEEP = 0, SIZE_MODE_ON = 1 };
 
 typedef struct {
     uint32_t type;
@@ -398,6 +402,9 @@ static int send_msg(int fd, uint32_t type, const void *data, size_t len);
 #define MENU_MAX_DEPTH 8
 #define DEFAULT_HISTORY_LINES 2000
 #define MAX_HISTORY_LINES 100000
+#define MAX_HANDOFF_FDS 256   /* SCM_RIGHTS cap for a session handoff */
+#define MAX_HANDOFF_BYTES (256u * 1024u * 1024u)
+#define ADOPT_TIMEOUT_MS 2000
 
 /* ------------------------------------------------------------------ */
 /* small helpers                                                      */
@@ -1511,6 +1518,7 @@ struct Client {
     int cols, rows;
     int attached;
     uint64_t order;        /* attach/resize sequence, newest client wins */
+    uint64_t input_order;  /* last input sequence, used by resize-on-input */
     int truecolor;
     unsigned char in[16384];
     size_t inlen;
@@ -1571,6 +1579,7 @@ struct Session {
 
     int w, h;
     int status_bottom;
+    int resize_on_input;    /* size follows the client that last sent input */
     int32_t status_bg;      /* 0 uses the terminal default */
     DisplayOptions display;
     int history_limit;
@@ -1581,25 +1590,37 @@ struct Session {
     Client *clients;
     uint64_t client_order;
     int running;
+    int adopted;           /* handed off to a new server; do not clean up fds */
     int redraw;            /* a removed client changed the session size */
 
     long long last_status;
     long long last_name_check;
 };
 
-/* Compact sequence numbers on wrap, preserving the newest-client ordering. */
+/* Compact sequence numbers on wrap, preserving both attach/resize and
+   input ordering across all clients. */
 static uint64_t client_next_order(Session *s) {
     if (s->client_order == UINT64_MAX) {
         uint64_t previous = 0, rank = 0;
         for (;;) {
             Client *next = NULL;
+            uint64_t next_value = 0;
             for (Client *c = s->clients; c; c = c->next) {
-                if (c->order > previous && (!next || c->order < next->order)) next = c;
+                uint64_t values[2] = { c->order, c->input_order };
+                for (int i = 0; i < 2; i++) {
+                    uint64_t value = values[i];
+                    if (value > previous && (!next || value < next_value)) {
+                        next = c;
+                        next_value = value;
+                    }
+                }
             }
             if (!next) break;
-            previous = next->order;
             if (rank == UINT64_MAX - 1) range_error();
-            next->order = ++rank;
+            if (next->order == next_value) next->order = rank + 1;
+            if (next->input_order == next_value) next->input_order = rank + 1;
+            previous = next_value;
+            rank++;
         }
         s->client_order = rank;
     }
@@ -2596,6 +2617,7 @@ enum {
     SET_SHOW_MURX,
     SET_SHOW_HOSTNAME,
     SET_SHOW_PANE_TITLES,
+    SET_RESIZE_ON_INPUT,
     SET_PREFIX
 };
 
@@ -2671,6 +2693,7 @@ static const MenuItem menu_config_items[] = {
     { "Show [murx] label",     MI_TOGGLE, SET_SHOW_MURX, 1, 0 },
     { "Show hostname",         MI_TOGGLE, SET_SHOW_HOSTNAME, 1, 0 },
     { "Show pane titles",      MI_TOGGLE, SET_SHOW_PANE_TITLES, 1, 0 },
+    { "Resize to last input",  MI_TOGGLE, SET_RESIZE_ON_INPUT, 1, 0 },
     MENU_SEP,
     { "Reset display/status defaults", MI_ACTION, ACT_RESET_DISPLAY, 0, 0 }
 };
@@ -2767,6 +2790,7 @@ static int menu_setting_on(Session *s, Client *c, const MenuItem *it) {
     case SET_SHOW_MURX:     return s->display.show_murx == it->arg;
     case SET_SHOW_HOSTNAME: return s->display.show_hostname == it->arg;
     case SET_SHOW_PANE_TITLES: return s->display.show_pane_titles == it->arg;
+    case SET_RESIZE_ON_INPUT: return s->resize_on_input == it->arg;
     case SET_PREFIX:        return c->prefix == it->arg;
     default: return 0;
     }
@@ -3195,6 +3219,94 @@ static int send_msg(int fd, uint32_t type, const void *data, size_t len) {
     return 0;
 }
 
+static int read_exact(int fd, void *buf, size_t len) {
+    unsigned char *p = buf;
+    while (len > 0) {
+        ssize_t n = read(fd, p, len);
+        if (n > 0) {
+            p += (size_t)n;
+            len -= (size_t)n;
+        } else if (n < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Send a message header with file descriptors attached. The payload follows
+   as ordinary stream bytes so callers can pass large handoff blobs. */
+static int send_msg_fds(int fd, uint32_t type, const void *data, size_t len,
+                        const int *fds, size_t nfds) {
+    MsgHdr h;
+    if (len > UINT32_MAX || nfds > MAX_HANDOFF_FDS) { errno = EMSGSIZE; return -1; }
+    h.type = type;
+    h.len = (uint32_t)len;
+
+    char control[CMSG_SPACE(MAX_HANDOFF_FDS * sizeof(int))];
+    memset(control, 0, sizeof control);
+    struct iovec iov = { &h, sizeof h };
+    struct msghdr msg;
+    memset(&msg, 0, sizeof msg);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    if (nfds) {
+        msg.msg_control = control;
+        msg.msg_controllen = CMSG_SPACE(nfds * sizeof(int));
+        struct cmsghdr *cm = CMSG_FIRSTHDR(&msg);
+        cm->cmsg_level = SOL_SOCKET;
+        cm->cmsg_type = SCM_RIGHTS;
+        cm->cmsg_len = CMSG_LEN(nfds * sizeof(int));
+        memcpy(CMSG_DATA(cm), fds, nfds * sizeof(int));
+    }
+    ssize_t n;
+    do {
+        n = sendmsg(fd, &msg, 0);
+    } while (n < 0 && errno == EINTR);
+    if (n < 0) return -1;
+    if (len && write_all(fd, data, len) < 0) return -1;
+    return 0;
+}
+
+/* Receive exactly one message header, collecting any attached descriptors. */
+static int recv_msg_header(int fd, MsgHdr *h, int *outfds, int maxfds, int *nfds) {
+    *nfds = 0;
+    unsigned char *p = (unsigned char *)h;
+    size_t off = 0;
+    int got_fds = 0;
+    while (off < sizeof *h) {
+        char control[CMSG_SPACE(MAX_HANDOFF_FDS * sizeof(int))];
+        memset(control, 0, sizeof control);
+        struct iovec iov = { p + off, sizeof *h - off };
+        struct msghdr msg;
+        memset(&msg, 0, sizeof msg);
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control;
+        msg.msg_controllen = sizeof control;
+        ssize_t n;
+        do {
+            n = recvmsg(fd, &msg, 0);
+        } while (n < 0 && errno == EINTR);
+        if (n <= 0) return -1;
+        off += (size_t)n;
+        if (!got_fds) {
+            for (struct cmsghdr *cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
+                if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) continue;
+                size_t count = (cm->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+                const int *fdp = (const int *)CMSG_DATA(cm);
+                for (size_t i = 0; i < count; i++) {
+                    if (*nfds < maxfds) outfds[(*nfds)++] = fdp[i];
+                    else close(fdp[i]);
+                }
+                got_fds = 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static void short_hostname(char *out, size_t n) {
     if (gethostname(out, n) < 0) snprintf(out, n, "localhost");
     out[n - 1] = '\0';
@@ -3212,14 +3324,25 @@ static void invalidate_clients(Session *s) {
 }
 
 static void session_recalc_size(Session *s) {
-    /* The most recently attached or resized client decides the session size.
-       This makes a reattach from a larger terminal grow the session even if an
-       older, smaller client is still connected. Such clients render only the
-       part of the session that fits (see draw_frame). */
+    /* Normally the most recently attached or resized client decides the
+       session size. This makes a reattach from a larger terminal grow the
+       session even if an older, smaller client is still connected. Such
+       clients render only the part of the session that fits (see draw_frame).
+
+       With resize-on-input, the last client to send any input decides instead;
+       attach/resize order is only the fallback until the first input arrives. */
     Client *best = NULL;
-    for (Client *c = s->clients; c; c = c->next) {
-        if (!c->attached || c->dead || c->fd < 0) continue;
-        if (!best || c->order > best->order) best = c;
+    if (s->resize_on_input) {
+        for (Client *c = s->clients; c; c = c->next) {
+            if (!c->attached || c->dead || c->fd < 0 || !c->input_order) continue;
+            if (!best || c->input_order > best->input_order) best = c;
+        }
+    }
+    if (!best) {
+        for (Client *c = s->clients; c; c = c->next) {
+            if (!c->attached || c->dead || c->fd < 0) continue;
+            if (!best || c->order > best->order) best = c;
+        }
     }
     if (!best) return;
     int cols = best->cols;
@@ -3768,6 +3891,10 @@ static void menu_apply_setting(Client *c, Session *s, const MenuItem *it) {
         s->display.show_pane_titles = value;
         session_layout(s);
         s->redraw = 1;
+        break;
+    case SET_RESIZE_ON_INPUT:
+        s->resize_on_input = value ? 1 : 0;
+        session_recalc_size(s);
         break;
     case SET_PREFIX:        c->prefix = (unsigned char)value; break;
     default: return;
@@ -4358,7 +4485,585 @@ static Client *client_new(int fd) {
     return c;
 }
 
-static void handle_message(Client *c, Session *s, uint32_t type, const unsigned char *data, uint32_t len) {
+/* ------------------------------------------------------------------ */
+/* session handoff serialization                                       */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    unsigned char *p;
+    size_t len, cap;
+} HBuf;
+
+typedef struct {
+    const unsigned char *p;
+    size_t len, off;
+} HRdBuf;
+
+static void buf_reserve(HBuf *b, size_t need) {
+    if (need <= b->cap) return;
+    size_t cap = buffer_capacity(b->cap ? b->cap : 65536, need);
+    b->p = xrealloc(b->p, cap);
+    b->cap = cap;
+}
+
+static void buf_put(HBuf *b, const void *data, size_t len) {
+    buf_reserve(b, size_add(b->len, len));
+    memcpy(b->p + b->len, data, len);
+    b->len += len;
+}
+
+static void buf_i32(HBuf *b, int32_t v) { buf_put(b, &v, sizeof v); }
+static void buf_u32(HBuf *b, uint32_t v) { buf_put(b, &v, sizeof v); }
+static void buf_u64(HBuf *b, uint64_t v) { buf_put(b, &v, sizeof v); }
+static void buf_i64(HBuf *b, int64_t v) { buf_put(b, &v, sizeof v); }
+
+static void buf_double(HBuf *b, double v) {
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    buf_u64(b, bits);
+}
+
+static void buf_str(HBuf *b, const char *s, size_t max) {
+    size_t n = strlen(s);
+    if (n >= max) n = max - 1;
+    buf_u32(b, (uint32_t)n);
+    buf_put(b, s, n);
+}
+
+static int rd_take(HRdBuf *r, void *data, size_t len) {
+    if (len > r->len - r->off) return -1;
+    memcpy(data, r->p + r->off, len);
+    r->off += len;
+    return 0;
+}
+
+static int rd_i32(HRdBuf *r, int32_t *v) { return rd_take(r, v, sizeof *v); }
+static int rd_u32(HRdBuf *r, uint32_t *v) { return rd_take(r, v, sizeof *v); }
+static int rd_u64(HRdBuf *r, uint64_t *v) { return rd_take(r, v, sizeof *v); }
+static int rd_i64(HRdBuf *r, int64_t *v) { return rd_take(r, v, sizeof *v); }
+
+static int rd_double(HRdBuf *r, double *v) {
+    uint64_t bits;
+    if (rd_u64(r, &bits) < 0) return -1;
+    memcpy(v, &bits, sizeof *v);
+    return 0;
+}
+
+static int rd_str(HRdBuf *r, char *out, size_t max) {
+    uint32_t n;
+    if (rd_u32(r, &n) < 0 || n >= max || rd_take(r, out, n) < 0) return -1;
+    out[n] = '\0';
+    return 0;
+}
+
+static void ser_pen(HBuf *b, const Pen *pen) {
+    buf_i32(b, pen->fg);
+    buf_i32(b, pen->bg);
+    buf_u32(b, pen->attr);
+}
+
+static int rd_pen(HRdBuf *r, Pen *pen) {
+    uint32_t attr;
+    if (rd_i32(r, &pen->fg) < 0 || rd_i32(r, &pen->bg) < 0 ||
+        rd_u32(r, &attr) < 0) return -1;
+    pen->attr = (uint8_t)attr;
+    return 0;
+}
+
+static void ser_grid(HBuf *b, const Grid *g) {
+    buf_i32(b, g->w);
+    buf_i32(b, g->h);
+    if (g->w > 0 && g->h > 0)
+        buf_put(b, g->c, size_mul((size_t)g->w, (size_t)g->h) * sizeof(Cell));
+}
+
+static int rd_grid(HRdBuf *r, Grid *g) {
+    int32_t w, h;
+    if (rd_i32(r, &w) < 0 || rd_i32(r, &h) < 0) return -1;
+    if (w < 1 || h < 1 || w > MAX_DIMENSION || h > MAX_DIMENSION) return -1;
+    size_t cells = size_mul((size_t)w, (size_t)h);
+    if (cells > SIZE_MAX / sizeof(Cell) || cells * sizeof(Cell) > r->len - r->off) return -1;
+    grid_free(g);
+    grid_init(g, w, h);
+    memcpy(g->c, r->p + r->off, cells * sizeof(Cell));
+    r->off += cells * sizeof(Cell);
+    return 0;
+}
+
+static void ser_layout(HBuf *b, const Layout *l) {
+    buf_i32(b, l->type);
+    buf_double(b, l->ratio);
+    if (l->type == L_LEAF) {
+        buf_i32(b, l->pane ? l->pane->id : 0);
+    } else {
+        ser_layout(b, l->a);
+        ser_layout(b, l->b);
+    }
+}
+
+static Layout *rd_layout(HRdBuf *r, Pane **panes, int npane) {
+    int32_t type;
+    Layout *l = xcalloc(1, sizeof *l);
+    if (rd_i32(r, &type) < 0 || rd_double(r, &l->ratio) < 0) { free(l); return NULL; }
+    l->type = (int)type;
+    if (l->type == L_LEAF) {
+        int32_t id;
+        if (rd_i32(r, &id) < 0) { free(l); return NULL; }
+        for (int i = 0; i < npane; i++) {
+            if (panes[i]->id == id) { l->pane = panes[i]; break; }
+        }
+        if (!l->pane) { free(l); return NULL; }
+        return l;
+    }
+    if (l->type != L_COLS && l->type != L_ROWS) { free(l); return NULL; }
+    l->a = rd_layout(r, panes, npane);
+    l->b = rd_layout(r, panes, npane);
+    if (!l->a || !l->b) {
+        layout_free(l);
+        return NULL;
+    }
+    l->a->parent = l;
+    l->b->parent = l;
+    return l;
+}
+
+static Pane *find_pane_id(Pane **panes, int npane, int32_t id) {
+    for (int i = 0; i < npane; i++) if (panes[i]->id == id) return panes[i];
+    return NULL;
+}
+
+static void ser_pane(HBuf *b, const Pane *p, int master_idx, int tty_idx) {
+    buf_i32(b, p->id);
+    buf_i32(b, master_idx);
+    buf_i32(b, tty_idx);
+    buf_i32(b, p->pid);
+    buf_i32(b, p->alive);
+    buf_i32(b, p->x); buf_i32(b, p->y); buf_i32(b, p->w); buf_i32(b, p->h);
+    ser_grid(b, &p->main_grid);
+    ser_grid(b, &p->alt_grid);
+    buf_i32(b, p->on_alt);
+    buf_i32(b, p->history_start);
+    buf_i32(b, p->history_count);
+    for (int i = 0; i < p->history_count; i++) {
+        int slot = (p->history_start + i) % p->history_limit;
+        ser_grid(b, &p->history[slot]);
+    }
+    buf_i32(b, p->cx); buf_i32(b, p->cy); buf_i32(b, p->wrap_pending);
+    buf_i32(b, p->scroll_top); buf_i32(b, p->scroll_bot);
+    buf_i32(b, p->cursor_visible); buf_i32(b, p->app_cursor);
+    buf_i32(b, p->insert_mode);
+    ser_pen(b, &p->pen);
+    buf_i32(b, p->saved_x); buf_i32(b, p->saved_y);
+    ser_pen(b, &p->saved_pen);
+    buf_i32(b, p->main_x); buf_i32(b, p->main_y);
+    ser_pen(b, &p->main_pen);
+    buf_i32(b, p->pstate);
+    buf_str(b, p->seq, sizeof p->seq);
+    buf_i32(b, p->seqlen);
+    buf_i32(b, p->u8_need); buf_i32(b, p->u8_have);
+    buf_u32(b, p->u8_cp);
+    buf_str(b, p->title, sizeof p->title);
+    buf_i32(b, p->title_pgrp);
+    buf_str(b, p->remote_title, sizeof p->remote_title);
+    buf_i32(b, p->remote_title_pgrp);
+    buf_str(b, p->reported_cwd, sizeof p->reported_cwd);
+    buf_i32(b, p->reported_cwd_pgrp);
+    buf_i32(b, p->reported_root);
+    buf_i32(b, p->reported_root_pgrp);
+}
+
+static int rd_pane(HRdBuf *r, Pane *p, int *fds, int nfds, int history_limit) {
+    int32_t id, master_idx, tty_idx;
+    if (rd_i32(r, &id) < 0 || rd_i32(r, &master_idx) < 0 ||
+        rd_i32(r, &tty_idx) < 0) return -1;
+    if (master_idx < 0 || master_idx >= nfds || tty_idx < 0 || tty_idx >= nfds) return -1;
+    p->id = id;
+    p->fd = fds[master_idx];
+    p->tty_fd = fds[tty_idx];
+    if (rd_i32(r, (int32_t *)&p->pid) < 0 || rd_i32(r, &p->alive) < 0) return -1;
+    if (rd_i32(r, &p->x) < 0 || rd_i32(r, &p->y) < 0 ||
+        rd_i32(r, &p->w) < 0 || rd_i32(r, &p->h) < 0) return -1;
+    if (rd_grid(r, &p->main_grid) < 0 || rd_grid(r, &p->alt_grid) < 0) return -1;
+    int32_t on_alt, count, start;
+    if (rd_i32(r, &on_alt) < 0 || rd_i32(r, &start) < 0 ||
+        rd_i32(r, &count) < 0) return -1;
+    p->on_alt = on_alt != 0;
+    p->history_limit = history_limit;
+    if (count < 0 || count > history_limit || start < 0 ||
+        (history_limit > 0 && start >= history_limit)) return -1;
+    p->history_start = start;
+    p->history_count = count;
+    if (count) {
+        p->history = xcalloc((size_t)history_limit, sizeof *p->history);
+        for (int i = 0; i < count; i++) {
+            int slot = (start + i) % history_limit;
+            if (rd_grid(r, &p->history[slot]) < 0) return -1;
+        }
+    }
+    if (rd_i32(r, &p->cx) < 0 || rd_i32(r, &p->cy) < 0 ||
+        rd_i32(r, &p->wrap_pending) < 0) return -1;
+    if (rd_i32(r, &p->scroll_top) < 0 || rd_i32(r, &p->scroll_bot) < 0 ||
+        rd_i32(r, &p->cursor_visible) < 0 || rd_i32(r, &p->app_cursor) < 0 ||
+        rd_i32(r, &p->insert_mode) < 0) return -1;
+    if (rd_pen(r, &p->pen) < 0 || rd_i32(r, &p->saved_x) < 0 ||
+        rd_i32(r, &p->saved_y) < 0 || rd_pen(r, &p->saved_pen) < 0 ||
+        rd_i32(r, &p->main_x) < 0 || rd_i32(r, &p->main_y) < 0 ||
+        rd_pen(r, &p->main_pen) < 0) return -1;
+    int32_t pstate, seqlen, u8_need, u8_have, u8cp;
+    if (rd_i32(r, &pstate) < 0 || rd_str(r, p->seq, sizeof p->seq) < 0 ||
+        rd_i32(r, &seqlen) < 0) return -1;
+    p->pstate = (ParseState)pstate;
+    p->seqlen = seqlen;
+    if (rd_i32(r, &u8_need) < 0 || rd_i32(r, &u8_have) < 0 ||
+        rd_i32(r, (int32_t *)&u8cp) < 0) return -1;
+    p->u8_need = u8_need;
+    p->u8_have = u8_have;
+    p->u8_cp = (uint32_t)u8cp;
+    if (rd_str(r, p->title, sizeof p->title) < 0 ||
+        rd_i32(r, (int32_t *)&p->title_pgrp) < 0 ||
+        rd_str(r, p->remote_title, sizeof p->remote_title) < 0 ||
+        rd_i32(r, (int32_t *)&p->remote_title_pgrp) < 0 ||
+        rd_str(r, p->reported_cwd, sizeof p->reported_cwd) < 0 ||
+        rd_i32(r, (int32_t *)&p->reported_cwd_pgrp) < 0 ||
+        rd_i32(r, &p->reported_root) < 0 ||
+        rd_i32(r, (int32_t *)&p->reported_root_pgrp) < 0) return -1;
+    p->grid = p->on_alt ? &p->alt_grid : &p->main_grid;
+    return 0;
+}
+
+static void ser_client(HBuf *b, const Client *c, int fd_idx,
+                       Pane **panes, int npane, size_t skip_net) {
+    buf_i32(b, fd_idx);
+    buf_i32(b, c->cols); buf_i32(b, c->rows);
+    buf_i32(b, c->attached);
+    buf_u64(b, c->order);
+    buf_u64(b, c->input_order);
+    buf_i32(b, c->truecolor);
+    buf_u32(b, (uint32_t)c->inlen);
+    buf_put(b, c->in, c->inlen);
+    buf_i64(b, c->escape_since);
+    /* Preserve partially received protocol messages. The invoking client's
+       C_ADOPT request is stripped by the caller so it is not replayed in the
+       new server. */
+    size_t netoff = skip_net <= c->netlen ? skip_net : c->netlen;
+    size_t netlen = c->netlen - netoff;
+    buf_u32(b, (uint32_t)netlen);
+    buf_put(b, c->net + netoff, netlen);
+    buf_i32(b, c->locked); buf_i32(b, c->prefix_pending);
+    buf_i32(b, c->prefix);
+    buf_i32(b, c->mode); buf_i32(b, c->prompt_kind);
+    buf_str(b, c->prompt, sizeof c->prompt);
+    buf_i32(b, c->prompt_len); buf_i32(b, c->prompt_label_len);
+    buf_i32(b, c->menu_page); buf_i32(b, c->menu_top);
+    buf_i32(b, c->menu_sel); buf_i32(b, c->menu_depth);
+    for (int i = 0; i < MENU_MAX_DEPTH; i++) {
+        buf_i32(b, c->menu_parent[i]);
+        buf_i32(b, c->menu_parent_sel[i]);
+    }
+    buf_i32(b, c->confirm_action);
+    buf_str(b, c->msg, sizeof c->msg);
+    buf_i64(b, c->msg_until);
+    buf_str(b, c->title, sizeof c->title);
+    buf_i32(b, c->dead);
+
+    uint32_t nscroll = 0;
+    for (Scrollback *sb = c->scrollbacks; sb; sb = sb->next) nscroll++;
+    buf_u32(b, nscroll);
+    for (Scrollback *sb = c->scrollbacks; sb; sb = sb->next) {
+        int32_t id = 0;
+        for (int i = 0; i < npane; i++) {
+            if (panes[i] == sb->pane) { id = panes[i]->id; break; }
+        }
+        buf_i32(b, id);
+        buf_i32(b, sb->offset);
+        ser_grid(b, &sb->grid);
+    }
+}
+
+static int rd_client(HRdBuf *r, Client *c, int *fds, int nfds,
+                     Pane **panes, int npane) {
+    int32_t fd_idx;
+    if (rd_i32(r, &fd_idx) < 0) return -1;
+    if (fd_idx < 0 || fd_idx >= nfds) return -1;
+    c->fd = fds[fd_idx];
+    if (rd_i32(r, &c->cols) < 0 || rd_i32(r, &c->rows) < 0 ||
+        rd_i32(r, &c->attached) < 0) return -1;
+    if (rd_u64(r, &c->order) < 0 || rd_u64(r, &c->input_order) < 0) return -1;
+    if (rd_i32(r, &c->truecolor) < 0) return -1;
+    uint32_t inlen;
+    if (rd_u32(r, &inlen) < 0 || inlen > sizeof c->in ||
+        rd_take(r, c->in, inlen) < 0) return -1;
+    c->inlen = inlen;
+    if (rd_i64(r, &c->escape_since) < 0) return -1;
+    uint32_t netlen;
+    if (rd_u32(r, &netlen) < 0 || netlen > sizeof c->net ||
+        rd_take(r, c->net, netlen) < 0) return -1;
+    c->netlen = netlen;
+    int32_t prefix;
+    if (rd_i32(r, &c->locked) < 0 || rd_i32(r, &c->prefix_pending) < 0 ||
+        rd_i32(r, &prefix) < 0) return -1;
+    c->prefix = (unsigned char)prefix;
+    if (rd_i32(r, &c->mode) < 0 || rd_i32(r, &c->prompt_kind) < 0 ||
+        rd_str(r, c->prompt, sizeof c->prompt) < 0 ||
+        rd_i32(r, &c->prompt_len) < 0 ||
+        rd_i32(r, &c->prompt_label_len) < 0) return -1;
+    if (rd_i32(r, &c->menu_page) < 0 || rd_i32(r, &c->menu_top) < 0 ||
+        rd_i32(r, &c->menu_sel) < 0 || rd_i32(r, &c->menu_depth) < 0) return -1;
+    for (int i = 0; i < MENU_MAX_DEPTH; i++) {
+        if (rd_i32(r, &c->menu_parent[i]) < 0 ||
+            rd_i32(r, &c->menu_parent_sel[i]) < 0) return -1;
+    }
+    if (rd_i32(r, &c->confirm_action) < 0 ||
+        rd_str(r, c->msg, sizeof c->msg) < 0 ||
+        rd_i64(r, &c->msg_until) < 0 ||
+        rd_str(r, c->title, sizeof c->title) < 0) return -1;
+    int32_t dead;
+    if (rd_i32(r, &dead) < 0) return -1;
+    c->dead = dead != 0;
+
+    uint32_t nscroll;
+    if (rd_u32(r, &nscroll) < 0 || nscroll > 512) return -1;
+    for (uint32_t i = 0; i < nscroll; i++) {
+        Scrollback *sb = xcalloc(1, sizeof *sb);
+        int32_t id, offset;
+        if (rd_i32(r, &id) < 0 || rd_i32(r, &offset) < 0) {
+            free(sb);
+            return -1;
+        }
+        sb->pane = find_pane_id(panes, npane, id);
+        if (!sb->pane || rd_grid(r, &sb->grid) < 0) {
+            free(sb);
+            return -1;
+        }
+        sb->offset = offset;
+        sb->next = c->scrollbacks;
+        c->scrollbacks = sb;
+    }
+    return 0;
+}
+
+static int session_serialize(Session *s, HBuf *b, int *fds, int *nfds,
+                             Client *adopt_client, size_t adopt_skip) {
+    Pane *panes[512];
+    int npane = 0;
+    session_panes(s, panes, 512, &npane);
+    int nclient = 0;
+    for (Client *c = s->clients; c; c = c->next) nclient++;
+    /* listening socket + master/tty per pane + every client socket */
+    if (count_add(count_add(1, count_add(npane, npane)), nclient) > MAX_HANDOFF_FDS)
+        return -1;
+
+    buf_u32(b, 0x4d48524c);  /* "MHRL" */
+    buf_u32(b, 1);
+    buf_str(b, s->name, sizeof s->name);
+    buf_str(b, s->cwd, sizeof s->cwd);
+    buf_str(b, s->sock_path, sizeof s->sock_path);
+    buf_i32(b, s->w); buf_i32(b, s->h);
+    buf_i32(b, s->status_bottom); buf_i32(b, s->resize_on_input);
+    buf_i32(b, s->status_bg);
+    buf_i32(b, s->history_limit);
+    buf_i32(b, s->display.show_cwd); buf_i32(b, s->display.show_clock);
+    buf_i32(b, s->display.show_murx); buf_i32(b, s->display.show_hostname);
+    buf_i32(b, s->display.show_pane_titles);
+    buf_u64(b, s->client_order);
+
+    int fd_i = 0;
+    fds[fd_i++] = s->listen_fd;
+    buf_u32(b, (uint32_t)npane);
+    for (int i = 0; i < npane; i++) {
+        int master = fd_i++;
+        int tty = fd_i++;
+        fds[master] = panes[i]->fd;
+        fds[tty] = panes[i]->tty_fd;
+        ser_pane(b, panes[i], master, tty);
+    }
+
+    int nwin = 0;
+    for (Window *w = s->windows; w; w = w->next) nwin++;
+    buf_u32(b, (uint32_t)nwin);
+    int cur_idx = -1, last_idx = -1, wi = 0;
+    for (Window *w = s->windows; w; w = w->next, wi++) {
+        if (w == s->cur) cur_idx = wi;
+        if (w == s->last) last_idx = wi;
+        buf_str(b, w->name, sizeof w->name);
+        buf_i32(b, w->index);
+        buf_i32(b, w->privileged);
+        buf_i32(b, w->active ? w->active->id : 0);
+        ser_layout(b, w->root);
+    }
+    buf_i32(b, cur_idx);
+    buf_i32(b, last_idx);
+
+    buf_u32(b, (uint32_t)nclient);
+    int ci = 0;
+    for (Client *c = s->clients; c; c = c->next, ci++) {
+        fds[fd_i++] = c->fd;
+        ser_client(b, c, fd_i - 1, panes, npane,
+                   c == adopt_client ? adopt_skip : 0);
+    }
+    *nfds = fd_i;
+    return 0;
+}
+
+static Session *session_deserialize(HRdBuf *r, int *fds, int nfds) {
+    uint32_t magic, version;
+    if (rd_u32(r, &magic) < 0 || magic != 0x4d48524c ||
+        rd_u32(r, &version) < 0 || version != 1) return NULL;
+    Session *s = xcalloc(1, sizeof *s);
+    if (rd_str(r, s->name, sizeof s->name) < 0 ||
+        rd_str(r, s->cwd, sizeof s->cwd) < 0 ||
+        rd_str(r, s->sock_path, sizeof s->sock_path) < 0) goto fail;
+    if (rd_i32(r, &s->w) < 0 || rd_i32(r, &s->h) < 0 ||
+        rd_i32(r, &s->status_bottom) < 0 ||
+        rd_i32(r, &s->resize_on_input) < 0 ||
+        rd_i32(r, &s->status_bg) < 0 ||
+        rd_i32(r, &s->history_limit) < 0 ||
+        s->history_limit < 0 || s->history_limit > MAX_HISTORY_LINES) goto fail;
+    if (rd_i32(r, &s->display.show_cwd) < 0 ||
+        rd_i32(r, &s->display.show_clock) < 0 ||
+        rd_i32(r, &s->display.show_murx) < 0 ||
+        rd_i32(r, &s->display.show_hostname) < 0 ||
+        rd_i32(r, &s->display.show_pane_titles) < 0) goto fail;
+    if (rd_u64(r, &s->client_order) < 0) goto fail;
+
+    s->listen_fd = fds[0];
+    uint32_t npane;
+    if (rd_u32(r, &npane) < 0 || npane > 512) goto fail;
+    Pane **panes = xcalloc(npane ? npane : 1, sizeof *panes);
+    for (uint32_t i = 0; i < npane; i++) {
+        panes[i] = xcalloc(1, sizeof *panes[i]);
+        if (rd_pane(r, panes[i], fds, nfds, s->history_limit) < 0)
+            goto fail_panes;
+    }
+
+    uint32_t nwin;
+    if (rd_u32(r, &nwin) < 0 || nwin > 512) goto fail_panes;
+    for (uint32_t i = 0; i < nwin; i++) {
+        Window *w = xcalloc(1, sizeof *w);
+        int32_t active_id;
+        if (rd_str(r, w->name, sizeof w->name) < 0 ||
+            rd_i32(r, &w->index) < 0 || rd_i32(r, &w->privileged) < 0 ||
+            rd_i32(r, &active_id) < 0) { free(w); goto fail_panes; }
+        w->root = rd_layout(r, panes, (int)npane);
+        if (!w->root) { free(w); goto fail_panes; }
+        w->active = find_pane_id(panes, (int)npane, active_id);
+        w->next = s->windows;
+        s->windows = w;
+    }
+    /* Rebuild in serialization order. */
+    Window **order = xcalloc(nwin ? nwin : 1, sizeof *order);
+    uint32_t n = 0;
+    for (Window *w = s->windows; w; w = w->next) order[n++] = w;
+    s->windows = NULL;
+    for (uint32_t i = n; i > 0; i--) {
+        order[i - 1]->next = s->windows;
+        s->windows = order[i - 1];
+    }
+    free(order);
+    s->nwin = (int)nwin;
+    int32_t cur_idx, last_idx;
+    if (rd_i32(r, &cur_idx) < 0 || rd_i32(r, &last_idx) < 0) goto fail_panes;
+    for (int i = 0; i < (int)nwin; i++) {
+        Window *w = s->windows;
+        for (int k = 0; k < i; k++) w = w->next;
+        if (i == cur_idx) s->cur = w;
+        if (i == last_idx) s->last = w;
+    }
+
+    uint32_t nclient;
+    if (rd_u32(r, &nclient) < 0 || nclient > MAX_HANDOFF_FDS) goto fail_panes;
+    Client **clients = xcalloc(nclient ? nclient : 1, sizeof *clients);
+    for (uint32_t i = 0; i < nclient; i++) {
+        clients[i] = xcalloc(1, sizeof *clients[i]);
+        if (rd_client(r, clients[i], fds, nfds, panes, (int)npane) < 0)
+            goto fail_clients;
+    }
+    for (uint32_t i = nclient; i > 0; i--) {
+        clients[i - 1]->next = s->clients;
+        s->clients = clients[i - 1];
+    }
+    free(clients);
+    free(panes);
+    s->running = 1;
+    s->redraw = 1;
+    s->last_status = now_ms();
+    s->last_name_check = now_ms();
+    session_layout(s);
+    for (Client *c = s->clients; c; c = c->next) {
+        client_invalidate(c);
+        client_message(c, "Session adopted by new murx server");
+    }
+    return s;
+
+fail_clients:
+    for (uint32_t i = 0; i < nclient; i++) {
+        if (!clients[i]) continue;
+        if (clients[i]->prev_valid) grid_free(&clients[i]->prev);
+        while (clients[i]->scrollbacks)
+            scrollback_remove(&clients[i]->scrollbacks);
+        free(clients[i]);
+    }
+    free(clients);
+fail_panes:
+    for (uint32_t i = 0; i < npane; i++) {
+        if (!panes[i]) continue;
+        grid_free(&panes[i]->main_grid);
+        grid_free(&panes[i]->alt_grid);
+        if (panes[i]->history) {
+            for (int k = 0; k < panes[i]->history_count; k++)
+                grid_free(&panes[i]->history[k]);
+            free(panes[i]->history);
+        }
+        free(panes[i]);
+    }
+    free(panes);
+fail: {
+    /* Panes are freed separately above; free only the window scaffolding. */
+    Window *w = s->windows;
+    while (w) {
+        Window *next = w->next;
+        layout_free(w->root);
+        free(w);
+        w = next;
+    }
+    free(s);
+    return NULL;
+}
+}
+
+static void server_handoff(Client *c, Session *s, int handoff_fd,
+                           uint32_t adopt_len) {
+    HBuf b;
+    memset(&b, 0, sizeof b);
+    int fds[MAX_HANDOFF_FDS];
+    int nfds = 0;
+    MsgHdr fail = { 0, 0 };
+    size_t adopt_skip = size_add(sizeof(MsgHdr), adopt_len);
+    if (handoff_fd < 0 ||
+        session_serialize(s, &b, fds, &nfds, c, adopt_skip) < 0 ||
+        b.len == 0 || b.len > MAX_HANDOFF_BYTES) {
+        if (handoff_fd >= 0) (void)write_all(handoff_fd, &fail, sizeof fail);
+        free(b.p);
+        return;
+    }
+    if (send_msg_fds(handoff_fd, S_HANDOFF, b.p, b.len, fds, (size_t)nfds) < 0) {
+        (void)write_all(handoff_fd, &fail, sizeof fail);
+    } else {
+        /* The new server owns duplicates of every descriptor. Exit without
+           closing our copies, detaching clients or unlinking the socket. */
+        s->adopted = 1;
+        s->running = 0;
+    }
+    free(b.p);
+}
+
+static void handle_message(Client *c, Session *s, uint32_t type,
+                           const unsigned char *data, uint32_t len,
+                           int *fds, int nfds) {
+    if (type == C_ADOPT) {
+        server_handoff(c, s, nfds > 0 ? fds[0] : -1, len);
+        return;
+    }
     if (type == C_ATTACH) {
         if (len >= 8) {
             uint32_t cols, rows, flags = 0;
@@ -4376,6 +5081,10 @@ static void handle_message(Client *c, Session *s, uint32_t type, const unsigned 
             uint32_t color = 0;
             if (len >= 24) memcpy(&color, data + 20, 4);
             if (color && (color >> 24) != 1) { c->dead = 1; return; }
+            uint32_t size_mode = SIZE_MODE_KEEP;
+            if (len >= 28) memcpy(&size_mode, data + 24, 4);
+            if (size_mode > SIZE_MODE_ON) { c->dead = 1; return; }
+            if (size_mode == SIZE_MODE_ON) s->resize_on_input = 1;
             if (color) s->status_bg = (int32_t)color;
             if (status) {
                 s->status_bottom = status == 2;
@@ -4411,38 +5120,72 @@ static void handle_message(Client *c, Session *s, uint32_t type, const unsigned 
             invalidate_clients(s);
         }
     } else if (type == C_INPUT) {
+        /* Track input even while the mode is off so enabling it later (from
+           the menu or a reattach) already knows the last active client. */
+        if (len && c->attached) {
+            c->input_order = client_next_order(s);
+            if (s->resize_on_input) session_recalc_size(s);
+        }
         client_feed(c, s, data, len);
     }
 }
 
 static void client_read_socket(Client *c, Session *s) {
     unsigned char tmp[16384];
-    ssize_t n = read(c->fd, tmp, sizeof tmp);
+    char control[CMSG_SPACE(MAX_HANDOFF_FDS * sizeof(int))];
+    memset(control, 0, sizeof control);
+    struct iovec iov = { tmp, sizeof tmp };
+    struct msghdr msg;
+    memset(&msg, 0, sizeof msg);
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control;
+    msg.msg_controllen = sizeof control;
+
+    ssize_t n;
+    do {
+        n = recvmsg(c->fd, &msg, 0);
+    } while (n < 0 && errno == EINTR);
     if (n <= 0) {
-        if (n < 0 && (errno == EINTR || errno == EAGAIN)) return;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
         c->dead = 1;
         return;
     }
+    int msgfds[MAX_HANDOFF_FDS];
+    int nfds = 0;
+    for (struct cmsghdr *cm = CMSG_FIRSTHDR(&msg); cm; cm = CMSG_NXTHDR(&msg, cm)) {
+        if (cm->cmsg_level != SOL_SOCKET || cm->cmsg_type != SCM_RIGHTS) continue;
+        size_t count = (cm->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+        const int *fdp = (const int *)CMSG_DATA(cm);
+        for (size_t i = 0; i < count && nfds < MAX_HANDOFF_FDS; i++)
+            msgfds[nfds++] = fdp[i];
+    }
+
     if ((size_t)n > sizeof c->net - c->netlen) {
         c->dead = 1;
+        for (int i = 0; i < nfds; i++) close(msgfds[i]);
         return;
     }
     memcpy(c->net + c->netlen, tmp, (size_t)n);
     c->netlen += (size_t)n;
 
     size_t off = 0;
+    int first = 1;
     while (c->netlen - off >= sizeof(MsgHdr)) {
         MsgHdr h;
         memcpy(&h, c->net + off, sizeof h);
-        if (h.len > sizeof c->net - sizeof h) { c->dead = 1; return; }
+        if (h.len > sizeof c->net - sizeof h) { c->dead = 1; break; }
         if (h.len > c->netlen - off - sizeof h) break;
-        handle_message(c, s, h.type, c->net + off + sizeof h, h.len);
+        handle_message(c, s, h.type, c->net + off + sizeof h, h.len,
+                       first ? msgfds : NULL, first ? nfds : 0);
+        first = 0;
         off += sizeof h + h.len;
     }
     if (off > 0) {
         memmove(c->net, c->net + off, c->netlen - off);
         c->netlen -= off;
     }
+    for (int i = 0; i < nfds; i++) close(msgfds[i]);
 }
 
 static void accept_client(Session *s) {
@@ -4625,9 +5368,11 @@ static void run_server(Session *s) {
         }
     }
 
-    char msg[128];
-    snprintf(msg, sizeof msg, "[murx: session \"%s\" server exited]", s->name);
-    server_notify_all(s, msg);
+    if (!s->adopted) {
+        char msg[128];
+        snprintf(msg, sizeof msg, "[murx: session \"%s\" server exited]", s->name);
+        server_notify_all(s, msg);
+    }
     free(panes);
 }
 
@@ -4667,7 +5412,8 @@ static void server_fail(int readyfd, const char *stage, int err) {
 }
 
 static void server_start(const char *path, const char *name, int readyfd,
-                         const DisplayOptions *display, int history_limit) {
+                         const DisplayOptions *display, int history_limit,
+                         int adopt_fd, int *adopt_fds, int adopt_nfds) {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGHUP, SIG_IGN);
     signal(SIGCHLD, SIG_DFL);
@@ -4678,61 +5424,86 @@ static void server_start(const char *path, const char *name, int readyfd,
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGQUIT, &sa, NULL);
 
-    int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (lfd < 0) {
-        server_fail(readyfd, "socket", errno);
-        _exit(1);
-    }
-    struct sockaddr_un saun;
-    memset(&saun, 0, sizeof saun);
-    saun.sun_family = AF_UNIX;
-    size_t path_len = strlen(path);
-    if (path_len >= sizeof saun.sun_path) {
-        close(lfd);
-        server_fail(readyfd, "socket path", ENAMETOOLONG);
-        _exit(1);
-    }
-    memcpy(saun.sun_path, path, path_len + 1);
-    unlink(path);
-    /* Protect the socket without imposing private file permissions on pane
-       shells and their build output (rsync -a preserves those permissions). */
-    mode_t saved_umask = umask(077);
-    int bound = bind(lfd, (struct sockaddr *)&saun, sizeof saun);
-    int bind_err = errno;
-    umask(saved_umask);
-    if (bound < 0) {
-        close(lfd);
-        server_fail(readyfd, "bind", bind_err);
-        _exit(1);
-    }
-    if (listen(lfd, 16) < 0) {
-        int err = errno;
-        close(lfd);
-        server_fail(readyfd, "listen", err);
-        _exit(1);
-    }
-    chmod(path, 0600);
+    Session *s = NULL;
+    int lfd = -1;
+    if (adopt_fd >= 0) {
+        MsgHdr h;
+        if (adopt_nfds < 1 || read_exact(adopt_fd, &h, sizeof h) < 0 ||
+            h.type != S_HANDOFF || h.len == 0 || h.len > MAX_HANDOFF_BYTES) {
+            server_fail(readyfd, "adopt handshake", EPROTO);
+            _exit(1);
+        }
+        unsigned char *payload = xmalloc(h.len ? h.len : 1);
+        if (read_exact(adopt_fd, payload, h.len) < 0) {
+            free(payload);
+            server_fail(readyfd, "adopt handshake", EPROTO);
+            _exit(1);
+        }
+        HRdBuf r = { payload, h.len, 0 };
+        s = session_deserialize(&r, adopt_fds, adopt_nfds);
+        free(payload);
+        if (!s) {
+            server_fail(readyfd, "adopt state", EPROTO);
+            _exit(1);
+        }
+        lfd = s->listen_fd;
+    } else {
+        lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (lfd < 0) {
+            server_fail(readyfd, "socket", errno);
+            _exit(1);
+        }
+        struct sockaddr_un saun;
+        memset(&saun, 0, sizeof saun);
+        saun.sun_family = AF_UNIX;
+        size_t path_len = strlen(path);
+        if (path_len >= sizeof saun.sun_path) {
+            close(lfd);
+            server_fail(readyfd, "socket path", ENAMETOOLONG);
+            _exit(1);
+        }
+        memcpy(saun.sun_path, path, path_len + 1);
+        unlink(path);
+        /* Protect the socket without imposing private file permissions on pane
+           shells and their build output (rsync -a preserves those permissions). */
+        mode_t saved_umask = umask(077);
+        int bound = bind(lfd, (struct sockaddr *)&saun, sizeof saun);
+        int bind_err = errno;
+        umask(saved_umask);
+        if (bound < 0) {
+            close(lfd);
+            server_fail(readyfd, "bind", bind_err);
+            _exit(1);
+        }
+        if (listen(lfd, 16) < 0) {
+            int err = errno;
+            close(lfd);
+            server_fail(readyfd, "listen", err);
+            _exit(1);
+        }
+        chmod(path, 0600);
 
-    Session *s = xcalloc(1, sizeof *s);
-    snprintf(s->name, sizeof s->name, "%s", name);
-    snprintf(s->sock_path, sizeof s->sock_path, "%s", path);
-    if (!getcwd(s->cwd, sizeof s->cwd)) snprintf(s->cwd, sizeof s->cwd, "/");
-    s->listen_fd = lfd;
-    s->w = 80;
-    s->h = 24;
-    s->running = 1;
-    s->display = *display;
-    s->history_limit = history_limit;
-    s->last_status = now_ms();
+        s = xcalloc(1, sizeof *s);
+        snprintf(s->name, sizeof s->name, "%s", name);
+        snprintf(s->sock_path, sizeof s->sock_path, "%s", path);
+        if (!getcwd(s->cwd, sizeof s->cwd)) snprintf(s->cwd, sizeof s->cwd, "/");
+        s->listen_fd = lfd;
+        s->w = 80;
+        s->h = 24;
+        s->running = 1;
+        s->display = *display;
+        s->history_limit = history_limit;
+        s->last_status = now_ms();
 
-    Window *w = window_new(s, NULL);
-    if (!w) {
-        server_fail(readyfd, "cannot create pane (openpty)", errno);
-        server_cleanup(s);
-        _exit(1);
+        Window *w = window_new(s, NULL);
+        if (!w) {
+            server_fail(readyfd, "cannot create pane (openpty)", errno);
+            server_cleanup(s);
+            _exit(1);
+        }
+        s->cur = w;
+        session_layout(s);
     }
-    s->cur = w;
-    session_layout(s);
 
     if (readyfd >= 0) {
         char ok = '1';
@@ -4741,6 +5512,7 @@ static void server_start(const char *path, const char *name, int readyfd,
     }
 
     run_server(s);
+    if (s->adopted) _exit(0);
     server_cleanup(s);
     free(s);
     _exit(0);
@@ -4883,8 +5655,103 @@ static int ensure_socket_dir(void) {
     return 0;
 }
 
+/* Result of a successful C_ADOPT exchange. The descriptors were received via
+   SCM_RIGHTS and are inherited by the new server across fork(). */
+typedef struct {
+    int client_fd;         /* existing connection, kept for the attach below */
+    MsgHdr h;
+    unsigned char *payload;
+    int *fds;
+    int nfds;
+} AdoptHandoff;
+
+static void adopt_handoff_free(AdoptHandoff *a) {
+    if (!a) return;
+    for (int i = 0; i < a->nfds; i++) {
+        if (a->fds[i] >= 0) close(a->fds[i]);
+    }
+    free(a->fds);
+    free(a->payload);
+    memset(a, 0, sizeof *a);
+}
+
+static void close_fds(int *fds, int nfds) {
+    for (int i = 0; i < nfds; i++) {
+        if (fds[i] >= 0) close(fds[i]);
+    }
+}
+
+/* Ask a cooperating server to hand its session to a new process. An older
+   server ignores C_ADOPT, so a timeout is a clean "cannot adopt" result. */
+static int request_adoption(int client_fd, AdoptHandoff *a) {
+    memset(a, 0, sizeof *a);
+    a->client_fd = client_fd;
+
+    int sp[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sp) < 0) return -1;
+    int pass_fd = sp[1];
+    if (send_msg_fds(client_fd, C_ADOPT, NULL, 0, &pass_fd, 1) < 0) {
+        int err = errno;
+        close(sp[0]);
+        close(sp[1]);
+        errno = err;
+        return -1;
+    }
+    close(sp[1]);
+
+    struct pollfd pfd;
+    pfd.fd = sp[0];
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    int pr;
+    do {
+        pr = poll(&pfd, 1, ADOPT_TIMEOUT_MS);
+    } while (pr < 0 && errno == EINTR);
+    if (pr == 0) {
+        close(sp[0]);
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    if (pr < 0) {
+        int err = errno;
+        close(sp[0]);
+        errno = err;
+        return -1;
+    }
+
+    int fds[MAX_HANDOFF_FDS];
+    int nfds = 0;
+    MsgHdr h;
+    if (recv_msg_header(sp[0], &h, fds, MAX_HANDOFF_FDS, &nfds) < 0 ||
+        h.type != S_HANDOFF || h.len == 0 || h.len > MAX_HANDOFF_BYTES ||
+        nfds < 1) {
+        close_fds(fds, nfds);
+        close(sp[0]);
+        errno = EPROTO;
+        return -1;
+    }
+    unsigned char *payload = xmalloc(h.len);
+    if (read_exact(sp[0], payload, h.len) < 0) {
+        int err = errno ? errno : EPROTO;
+        close_fds(fds, nfds);
+        close(sp[0]);
+        free(payload);
+        errno = err;
+        return -1;
+    }
+    close(sp[0]);
+
+    a->h = h;
+    a->payload = payload;
+    a->nfds = nfds;
+    a->fds = xmalloc((size_t)nfds * sizeof *a->fds);
+    memcpy(a->fds, fds, (size_t)nfds * sizeof *a->fds);
+    return 0;
+}
+
 static int spawn_server(const char *path, const char *name,
-                        const DisplayOptions *display, int history_limit) {
+                        const DisplayOptions *display, int history_limit,
+                        const AdoptHandoff *adopt) {
     if (ensure_socket_dir() < 0) return -1;
     char dir[PATH_MAX], lockpath[PATH_MAX + 64];
     socket_dir(dir, sizeof dir);
@@ -4896,15 +5763,26 @@ static int spawn_server(const char *path, const char *name,
         return -1;
     }
 
-    int fd = connect_session(path);
-    if (fd >= 0) {
-        flock(lock, LOCK_UN);
-        close(lock);
-        return fd;
+    int fd = -1;
+    if (!adopt) {
+        fd = connect_session(path);
+        if (fd >= 0) {
+            flock(lock, LOCK_UN);
+            close(lock);
+            return fd;
+        }
     }
 
     int p[2];
     if (pipe(p) < 0) {
+        flock(lock, LOCK_UN);
+        close(lock);
+        return -1;
+    }
+    int hp[2] = { -1, -1 };
+    if (adopt && pipe(hp) < 0) {
+        close(p[0]);
+        close(p[1]);
         flock(lock, LOCK_UN);
         close(lock);
         return -1;
@@ -4914,12 +5792,17 @@ static int spawn_server(const char *path, const char *name,
     if (pid < 0) {
         close(p[0]);
         close(p[1]);
+        if (adopt) {
+            close(hp[0]);
+            close(hp[1]);
+        }
         flock(lock, LOCK_UN);
         close(lock);
         return -1;
     }
     if (pid == 0) {
         close(p[0]);
+        if (adopt) close(hp[1]);
         setsid();
         pid_t pid2 = fork();
         if (pid2 < 0) _exit(1);
@@ -4932,10 +5815,25 @@ static int spawn_server(const char *path, const char *name,
             if (dn > 2) close(dn);
         }
         close(lock);
-        server_start(path, name, p[1], display, history_limit);
+        if (adopt) {
+            server_start(path, name, p[1], display, history_limit, hp[0],
+                         adopt->fds, adopt->nfds);
+        } else {
+            server_start(path, name, p[1], display, history_limit, -1, NULL, 0);
+        }
         _exit(1);
     }
     close(p[1]);
+
+    int handoff_err = 0;
+    if (adopt) {
+        close(hp[0]);
+        if (write_all(hp[1], &adopt->h, sizeof adopt->h) < 0 ||
+            write_all(hp[1], adopt->payload, adopt->h.len) < 0)
+            handoff_err = errno;
+        close(hp[1]);
+    }
+
     char msg[256];
     size_t used = 0;
     ssize_t got;
@@ -4956,6 +5854,10 @@ static int spawn_server(const char *path, const char *name,
     flock(lock, LOCK_UN);
     close(lock);
 
+    if (handoff_err) {
+        errno = handoff_err;
+        return -1;
+    }
     if (used < 1 || msg[0] != '1') {
         if (used > 0) {
             fprintf(stderr, "murx: server failed to start: %s\n", msg);
@@ -4965,6 +5867,7 @@ static int spawn_server(const char *path, const char *name,
         }
         return -1;
     }
+    if (adopt) return adopt->client_fd;
     for (int i = 0; i < 300; i++) {
         fd = connect_session(path);
         if (fd >= 0) return fd;
@@ -5038,7 +5941,8 @@ static int terminal_truecolor(void) {
     return 1;
 }
 
-static int run_client(int fd, const char *name, unsigned char prefix, int status, uint32_t color) {
+static int run_client(int fd, const char *name, unsigned char prefix, int status,
+                      uint32_t color, uint32_t resize_mode) {
     struct termios saved;
     if (tty_raw(&saved) < 0) {
         fprintf(stderr, "murx: not a terminal\n");
@@ -5073,8 +5977,9 @@ static int run_client(int fd, const char *name, unsigned char prefix, int status
 
     int cols, rows;
     tty_size(&cols, &rows);
-    uint32_t attach[6] = { (uint32_t)cols, (uint32_t)rows,
-                           (uint32_t)terminal_truecolor(), prefix, (uint32_t)status, color };
+    uint32_t attach[7] = { (uint32_t)cols, (uint32_t)rows,
+                           (uint32_t)terminal_truecolor(), prefix, (uint32_t)status, color,
+                           resize_mode };
     if (send_msg(fd, C_ATTACH, attach, sizeof attach) < 0) {
         /* errno is the only clue: the server accepted the connection but the
            attach write failed, usually because it closed the socket while
@@ -5228,6 +6133,7 @@ static void print_help(FILE *out) {
     help_row(out, "-h, --help", "show this help and exit");
     help_row(out, "-v, --version", "print the version and exit");
     help_row(out, "-l, --list-sessions", "list running sessions without attaching");
+    help_row(out, "--adopt", "move a session to a new server binary");
     help_row(out, "-p, --prefix LETTER", "client prefix Ctrl-LETTER (a-z, default: a)");
     help_row(out, "-s, --status POSITION", "status line: top or bottom (new sessions: top)");
     help_row(out, "-c, --color RRGGBB", "status bar background, six hex digits (e.g. 000000)");
@@ -5241,11 +6147,19 @@ static void print_help(FILE *out) {
     help_row(out, "-m, --murx", "show [murx] in status bar unless --cwd is set");
     help_row(out, "-n, --hostname", "show hostname: prefix in window titles");
     help_row(out, "-t, --titles", "show the title row above each pane (default: off)");
+    help_row(out, "--resize-on-input", "session size follows the last client with input");
 
     fputs("\n"
+          "--adopt asks the running server to hand the session to a new server\n"
+          "process, so an upgraded binary can take over without restarting panes.\n"
+          "It works with a session name or with the default session, and needs\n"
+          "cooperation from the running server; older servers are attached to\n"
+          "unchanged. Clients see a short notification when adoption succeeds.\n"
+          "\n"
           "Without -s or -c, an existing session keeps its position and color.\n"
-          "Display options set new session values and can be changed later from\n"
-          "the Configuration menu.\n"
+          "Without --resize-on-input, a session keeps its current size mode.\n"
+          "Display options and the size mode can be changed later\n"
+          "from the Configuration menu.\n"
           "\n"
           "Shortcuts (press the prefix, release it, then press the key shown;\n"
           "Ctrl-A is the default prefix):\n"
@@ -5301,6 +6215,9 @@ static int parse_prefix(const char *text, unsigned char *prefix) {
 
 int main(int argc, char **argv) {
     setlocale(LC_CTYPE, "");
+    /* The adoption handoff writes to a pipe whose reader is a forked server;
+       a failed start must surface as EPIPE, not kill this process. */
+    signal(SIGPIPE, SIG_IGN);
 
     int argi = 1;
     unsigned char prefix = DEFAULT_PREFIX;
@@ -5308,7 +6225,9 @@ int main(int argc, char **argv) {
     uint32_t color = 0;
     DisplayOptions display = {0};
     int history_limit = DEFAULT_HISTORY_LINES;
+    uint32_t resize_mode = SIZE_MODE_KEEP;
     int list = 0;
+    int adopt = 0;
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1]) {
         const char *option = argv[argi++];
         if (strcmp(option, "--") == 0) break;
@@ -5333,6 +6252,8 @@ int main(int argc, char **argv) {
             }
             history_limit = (int)lines;
             argi++;
+        } else if (strcmp(option, "--adopt") == 0) {
+            adopt = 1;
         } else if (strcmp(option, "-d") == 0 || strcmp(option, "--cwd") == 0) {
             display.show_cwd = 1;
         } else if (strcmp(option, "-C") == 0 || strcmp(option, "--clock") == 0) {
@@ -5343,6 +6264,8 @@ int main(int argc, char **argv) {
             display.show_hostname = 1;
         } else if (strcmp(option, "-t") == 0 || strcmp(option, "--titles") == 0) {
             display.show_pane_titles = 1;
+        } else if (strcmp(option, "--resize-on-input") == 0) {
+            resize_mode = SIZE_MODE_ON;
         } else if (strcmp(option, "-p") == 0 || strcmp(option, "--prefix") == 0) {
             if (argi >= argc || !parse_prefix(argv[argi], &prefix)) {
                 fprintf(stderr, "murx: %s requires a letter from a through z\n", option);
@@ -5402,7 +6325,36 @@ int main(int argc, char **argv) {
     make_socket_path(name, path, sizeof path);
 
     int fd = connect_session(path);
-    if (fd < 0) fd = spawn_server(path, name, &display, history_limit);
+    AdoptHandoff handoff;
+    memset(&handoff, 0, sizeof handoff);
+    if (fd >= 0 && adopt) {
+        if (request_adoption(fd, &handoff) == 0) {
+            int adopted_fd = spawn_server(path, name, &display, history_limit,
+                                          &handoff);
+            adopt_handoff_free(&handoff);
+            if (adopted_fd < 0) {
+                int err = errno;
+                close(fd);
+                if (err) {
+                    fprintf(stderr, "murx: cannot hand off session '%s': %s\n",
+                            name, strerror(err));
+                }
+                return 1;
+            }
+            fd = adopted_fd;
+        } else {
+            int err = errno ? errno : EPROTO;
+            if (err == ETIMEDOUT) {
+                fprintf(stderr,
+                        "murx: session '%s' runs a server without adoption support; "
+                        "attaching normally\n", name);
+            } else {
+                fprintf(stderr, "murx: cannot adopt session '%s': %s; "
+                                "attaching normally\n", name, strerror(err));
+            }
+        }
+    }
+    if (fd < 0) fd = spawn_server(path, name, &display, history_limit, NULL);
     if (fd < 0) {
         if (errno != 0) {
             fprintf(stderr, "murx: cannot start or attach session '%s': %s\n",
@@ -5410,5 +6362,5 @@ int main(int argc, char **argv) {
         }
         return 1;
     }
-    return run_client(fd, name, prefix, status, color);
+    return run_client(fd, name, prefix, status, color, resize_mode);
 }
