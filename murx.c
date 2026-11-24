@@ -88,7 +88,7 @@
 #define MURX_NOIPA
 #endif
 
-#define MURX_VERSION "1.0.3"
+#define MURX_VERSION "1.0.4"
 #define DEFAULT_PREFIX 0x01
 
 /* client -> server */
@@ -1522,7 +1522,7 @@ struct Client {
     int truecolor;
     unsigned char in[16384];
     size_t inlen;
-    long long escape_since;
+    int64_t escape_since;
     unsigned char net[65536];
     size_t netlen;
 
@@ -1553,7 +1553,7 @@ struct Client {
     int confirm_action;    /* 1 kill pane, 2 kill server, 3 kill window */
 
     char msg[256];
-    long long msg_until;
+    int64_t msg_until;
 
     char title[160];
 
@@ -1849,7 +1849,7 @@ static Pane *pane_new(const char *cwd, int w, int h, const char *title,
         signal(SIGTERM, SIG_DFL);
         setenv("TERM", "screen-256color", 1);
         if (session_name && *session_name) setenv("MURX", session_name, 1);
-        if (cwd && *cwd) chdir(cwd);
+        if (cwd && *cwd && chdir(cwd) < 0) perror("murx: chdir");
         const char *base = strrchr(shell, '/');
         base = base ? base + 1 : shell;
         char arg0[PATH_MAX];
@@ -4895,8 +4895,7 @@ static int session_serialize(Session *s, HBuf *b, int *fds, int *nfds,
     buf_i32(b, last_idx);
 
     buf_u32(b, (uint32_t)nclient);
-    int ci = 0;
-    for (Client *c = s->clients; c; c = c->next, ci++) {
+    for (Client *c = s->clients; c; c = c->next) {
         fds[fd_i++] = c->fd;
         ser_client(b, c, fd_i - 1, panes, npane,
                    c == adopt_client ? adopt_skip : 0);

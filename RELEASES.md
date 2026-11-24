@@ -1,9 +1,19 @@
-# Unreleased
+# murx 1.0.4 released
+
+**November 24, 2026**
 
 - Added short options for `--history` (`-H`), `--cwd` (`-d`),
   `--clock` (`-C`), `--murx` (`-m`), `--hostname` (`-n`), and
   `--titles` (`-t`).
 - Renamed `--pane-titles` to `--titles`.
+- Use `murx --adopt work` after upgrading to move a running session to the new
+  server while keeping panes, scrollback, and client connections. The running
+  server must support handoff. Sessions started by older versions need a
+  one-time restart.
+- Use `--resize-on-input` or the Configuration menu's **Resize to last input**
+  toggle to make the session size follow the client that last sent input.
+- Fixed the build with Arch's compiler flags by reading handoff timestamps
+  into matching 64-bit types.
 
 # murx 1.0.3 released
 

@@ -1,3 +1,9 @@
+murx (1.0.4-1) unstable; urgency=medium
+
+  * Update to upstream version 1.0.4.
+
+ -- Johannes Findeisen <you@hanez.org>  Tue, 24 Nov 2026 10:40:26 +0100
+
 murx (1.0.3-1) unstable; urgency=medium
 
   * Add Debian packaging for murx 1.0.3.
