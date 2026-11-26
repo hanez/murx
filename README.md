@@ -144,6 +144,10 @@ and `murx-root`.
   pipelines, the foreground process group leader supplies the name. Linux uses
   `/proc`; other systems use `ps`.
 
+## Screenshot
+
+![screenshot](screenshot.png)
+
 ## SSH window names and directories (optional)
 
 Enable `--hostname` to display reported remote hostnames and `--cwd` to
