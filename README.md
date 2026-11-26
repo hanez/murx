@@ -501,8 +501,9 @@ Mailing lists are provided by the [lists.xw3.org](https://lists.xw3.org) mailing
 
 | List | Description | Action | Action |
 |-------|--------|---------|--------|
-| murx-users@lists.xw3.org | General discussion | [Subscribe](mailto:murx-users-subscribe@fun-lang.xyz) | [Unsubscribe](mailto:murx-users-unsubscribe@fun-lang.xyz) |
+| murx-announcements@lists.xw3.org | Announcements | [Subscribe](mailto:murx-announcements-subscribe@fun-lang.xyz) | [Unsubscribe](mailto:murx-announcements-unsubscribe@fun-lang.xyz) |
 | murx-developers@lists.xw3.org | Development discussion | [Subscribe](mailto:murx-developers-subscribe@fun-lang.xyz) | [Unsubscribe](mailto:murx-developers-unsubscribe@fun-lang.xyz) |
+| murx-users@lists.xw3.org | General discussion | [Subscribe](mailto:murx-users-subscribe@fun-lang.xyz) | [Unsubscribe](mailto:murx-users-unsubscribe@fun-lang.xyz) |
 
 ## Authors
 
