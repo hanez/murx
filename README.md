@@ -484,6 +484,26 @@ packaged source files, run `make pkgsums` to sync their versions with
 `MURX_VERSION` in `murx.c` and refresh their checksums. This target requires
 `abuild` and `updpkgsums` (from `pacman-contrib`).
 
+## Community
+
+### IRC
+
+We use the [Libera.Chat](https://libera.chat/) IRC network for realtime collaboration.
+
+| Channel | Description |
+|-------|--------|
+| #murx | General discussion |
+| #murx-dev | Development discussion |
+
+### Mailing lists
+
+Mailing lists are provided by the [lists.xw3.org](https://lists.xw3.org) mailing list server.
+
+| List | Description | Action | Action |
+|-------|--------|---------|--------|
+| murx-users@lists.xw3.org | General discussion | [Subscribe](mailto:murx-users-subscribe@fun-lang.xyz) | [Unsubscribe](mailto:murx-users-unsubscribe@fun-lang.xyz) |
+| murx-developers@lists.xw3.org | Development discussion | [Subscribe](mailto:murx-developers-subscribe@fun-lang.xyz) | [Unsubscribe](mailto:murx-developers-unsubscribe@fun-lang.xyz) |
+
 ## Authors
 
 See [AUTHORS](AUTHORS) for project credits.
