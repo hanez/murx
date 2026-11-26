@@ -470,6 +470,13 @@ automatically on the BSDs where it is needed). Tested with Clang and
 GCC 16; `grid_resize()` carries a guarded workaround for a GCC 16 optimizer bug
 that otherwise collapses pane grids to 1x1.
 
+##  Installation
+
+Just run `make install` as root to install murx to `/usr/local/bin`.
+
+Run `PREFIX=/usr make install` as root to install murx to `/usr/bin` or use 
+`sudo PREFIX=/usr make install` to install murx to `/usr/bin` as normal user.
+
 ## Packages
 
 - [Alpine Linux](os/alpine/README.md)
