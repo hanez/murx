@@ -1,6 +1,6 @@
 COMMENT =	small persistent terminal multiplexer
 
-DISTNAME =	murx-1.0.4
+DISTNAME =	murx-1.0.5
 CATEGORIES =	sysutils
 HOMEPAGE =	https://codeberg.org/armin/murx
 MAINTAINER =	Johannes Findeisen <you@hanez.org>

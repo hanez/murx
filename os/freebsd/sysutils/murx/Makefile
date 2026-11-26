@@ -1,5 +1,5 @@
 PORTNAME=	murx
-DISTVERSION=	1.0.4
+DISTVERSION=	1.0.5
 CATEGORIES=	sysutils
 MASTER_SITES=	https://xw3.org/murx/murx/archive/
 

@@ -88,7 +88,7 @@
 #define MURX_NOIPA
 #endif
 
-#define MURX_VERSION "1.0.4"
+#define MURX_VERSION "1.0.5"
 #define DEFAULT_PREFIX 0x01
 
 /* client -> server */
@@ -698,6 +698,7 @@ struct Pane {
     pid_t reported_root_pgrp;
     int id;
     int tty_fd;
+    int adopted;
 
     Pane *next;
 };
@@ -4683,6 +4684,7 @@ static int rd_pane(HRdBuf *r, Pane *p, int *fds, int nfds, int history_limit) {
     p->id = id;
     p->fd = fds[master_idx];
     p->tty_fd = fds[tty_idx];
+    p->adopted = 1;
     if (rd_i32(r, (int32_t *)&p->pid) < 0 || rd_i32(r, &p->alive) < 0) return -1;
     if (rd_i32(r, &p->x) < 0 || rd_i32(r, &p->y) < 0 ||
         rd_i32(r, &p->w) < 0 || rd_i32(r, &p->h) < 0) return -1;
@@ -4940,6 +4942,7 @@ static Session *session_deserialize(HRdBuf *r, int *fds, int nfds) {
 
     uint32_t nwin;
     if (rd_u32(r, &nwin) < 0 || nwin > 512) goto fail_panes;
+    Window **window_tail = &s->windows;
     for (uint32_t i = 0; i < nwin; i++) {
         Window *w = xcalloc(1, sizeof *w);
         int32_t active_id;
@@ -4949,27 +4952,16 @@ static Session *session_deserialize(HRdBuf *r, int *fds, int nfds) {
         w->root = rd_layout(r, panes, (int)npane);
         if (!w->root) { free(w); goto fail_panes; }
         w->active = find_pane_id(panes, (int)npane, active_id);
-        w->next = s->windows;
-        s->windows = w;
+        *window_tail = w;
+        window_tail = &w->next;
     }
-    /* Rebuild in serialization order. */
-    Window **order = xcalloc(nwin ? nwin : 1, sizeof *order);
-    uint32_t n = 0;
-    for (Window *w = s->windows; w; w = w->next) order[n++] = w;
-    s->windows = NULL;
-    for (uint32_t i = n; i > 0; i--) {
-        order[i - 1]->next = s->windows;
-        s->windows = order[i - 1];
-    }
-    free(order);
     s->nwin = (int)nwin;
     int32_t cur_idx, last_idx;
     if (rd_i32(r, &cur_idx) < 0 || rd_i32(r, &last_idx) < 0) goto fail_panes;
-    for (int i = 0; i < (int)nwin; i++) {
-        Window *w = s->windows;
-        for (int k = 0; k < i; k++) w = w->next;
-        if (i == cur_idx) s->cur = w;
-        if (i == last_idx) s->last = w;
+    int wi = 0;
+    for (Window *w = s->windows; w; w = w->next, wi++) {
+        if (wi == cur_idx) s->cur = w;
+        if (wi == last_idx) s->last = w;
     }
 
     uint32_t nclient;
@@ -5204,11 +5196,32 @@ static void server_notify_all(Session *s, const char *msg) {
     }
 }
 
+/* Adopted shells are no longer children of the server. */
+static int adopted_shell_exited(pid_t pid) {
+    if (kill(pid, 0) < 0 && errno == ESRCH) return 1;
+#ifdef __linux__
+    /* A shell can remain a zombie until its new parent reaps it. */
+    char path[64], line[256];
+    snprintf(path, sizeof path, "/proc/%ld/status", (long)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char state = '\0';
+    while (fgets(line, sizeof line, f)) {
+        if (sscanf(line, "State: %c", &state) == 1) break;
+    }
+    fclose(f);
+    return state == 'Z' || state == 'X';
+#else
+    return 0;
+#endif
+}
+
 static void run_server(Session *s) {
     int maxpanes = count_add(session_pane_count(s), 64);
     Pane **panes = xcalloc((size_t)maxpanes, sizeof(Pane *));
     unsigned char rbuf[65536];
     int dirty = 1;
+    long long next_adopted_check = 0;
 
     while (s->running && !g_term) {
         int need = session_pane_count(s);
@@ -5229,15 +5242,25 @@ static void run_server(Session *s) {
                 Pane *p = panes[i];
                 if (p->pid != r) continue;
                 p->pid = -1;
-                for (;;) {
-                    ssize_t n = read(p->fd, rbuf, sizeof rbuf);
-                    if (n > 0) em_feed(p, rbuf, (size_t)n);
-                    else break;
-                }
-                p->alive = 0;
-                reaped = 1;
                 break;
             }
+        }
+        long long now = now_ms();
+        int check_adopted = now >= next_adopted_check;
+        if (check_adopted) next_adopted_check = now + 200;
+        for (int i = 0; i < np; i++) {
+            Pane *p = panes[i];
+            if (check_adopted && p->adopted && p->pid > 0 &&
+                adopted_shell_exited(p->pid))
+                p->pid = -1;
+            if (p->pid != -1) continue;
+            for (;;) {
+                ssize_t n = read(p->fd, rbuf, sizeof rbuf);
+                if (n > 0) em_feed(p, rbuf, (size_t)n);
+                else if (n >= 0 || errno != EINTR) break;
+            }
+            p->alive = 0;
+            reaped = 1;
         }
         if (reaped) {
             for (int i = 0; i < np; i++) {

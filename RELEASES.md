@@ -1,3 +1,12 @@
+# murx 1.0.5 released
+
+**November 26, 2026**
+
+- Preserve window order in the status bar when adopting a session with
+  `--adopt`.
+- Close adopted panes when their shells exit, including when Ctrl-D exits
+  a shell.
+
 # murx 1.0.4 released
 
 **November 24, 2026**
